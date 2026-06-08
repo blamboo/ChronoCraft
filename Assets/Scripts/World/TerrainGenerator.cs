@@ -2,7 +2,7 @@
 // Purpose: Procedural terrain proof-of-concept for the TimeCraft prototype.
 //          Generates a heightfield from layered Perlin noise (plain data) and builds
 //          a display mesh from it. The heightfield is the single source of truth for
-//          terrain height; the logical grid (next slice) will read this same data so
+//          terrain height; the logical grid reads this same data (via HeightAt) so
 //          pathfinding/placement and rendering can never diverge.
 // Location: Assets/Scripts/World/TerrainGenerator.cs
 // Dependencies: UnityEngine. Requires MeshFilter + MeshRenderer (auto-added).
@@ -33,7 +33,7 @@ public class TerrainGenerator : MonoBehaviour
     public int seed = 0;
 
     // Single source of truth for terrain height. Sized (width+1) x (depth+1) to match
-    // the mesh vertex grid. Exposed so the logical grid can sample the same data next.
+    // the mesh vertex grid. Stores RAW noise values; HeightAt() applies the multiplier.
     public float[,] Heights { get; private set; }
 
     void Start()
@@ -47,6 +47,15 @@ public class TerrainGenerator : MonoBehaviour
         Heights = BuildHeightfield();
         Mesh mesh = BuildMesh(Heights);
         GetComponent<MeshFilter>().sharedMesh = mesh;
+    }
+
+    // Local-space Y used by the mesh for vertex (x, z): raw noise height * heightMultiplier.
+    // Keeping this transform in one place is what lets the grid sample the same heights the
+    // mesh renders, so the two never drift apart (single source of truth).
+    public float HeightAt(int x, int z)
+    {
+        if (Heights == null) Generate();
+        return Heights[x, z] * heightMultiplier;
     }
 
     float[,] BuildHeightfield()

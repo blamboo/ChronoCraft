@@ -28,7 +28,7 @@ public class SimulationRunner : MonoBehaviour
 
     [Tooltip("Logical day/stat ticks in one in-game day. Hunger and other over-time stats " +
              "drain on these ticks. Read at Awake; effective on the next Play.")]
-    [Range(1, 96)]
+    [Range(1, 1000)]
     [SerializeField] private int ticksPerDay = 24;
 
     [Header("Time scale (drag live in Play mode)")]

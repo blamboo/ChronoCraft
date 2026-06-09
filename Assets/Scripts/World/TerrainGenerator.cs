@@ -1,9 +1,13 @@
 // TerrainGenerator.cs
+// Version: 0.7 (added waterLevel + central basin so a lake biases toward map centre)
 // Purpose: Procedural terrain proof-of-concept for the TimeCraft prototype.
 //          Generates a heightfield from layered Perlin noise (plain data) and builds
 //          a display mesh from it. The heightfield is the single source of truth for
 //          terrain height; the logical grid reads this same data (via HeightAt) so
 //          pathfinding/placement and rendering can never diverge.
+//          v0.7: a smooth central basin is subtracted from the heightfield, and a
+//          waterLevel (local-Y) is exposed. GridData classifies cells at/below
+//          waterLevel as water (unwalkable); GridManager renders a water plane there.
 // Location: Assets/Scripts/World/TerrainGenerator.cs
 // Dependencies: UnityEngine. Requires MeshFilter + MeshRenderer (auto-added).
 // Events emitted: none. Events consumed: none.
@@ -32,8 +36,24 @@ public class TerrainGenerator : MonoBehaviour
     public float heightMultiplier = 6f;     // vertical scale
     public int seed = 0;
 
+    [Header("Water")]
+    [Tooltip("Local-Y height of the water surface. Cells whose centre is at or below " +
+             "this are water (unwalkable). Raise to flood more, lower to drain. Tune " +
+             "live while watching the blue water plane in the Game view.")]
+    public float waterLevel = -1.5f;
+
+    [Header("Central basin (biases a lake toward the map centre)")]
+    [Tooltip("How far the map centre is pushed DOWN, in raw noise units (these get " +
+             "multiplied by Height Multiplier in the final mesh). 0 = no basin. Raise " +
+             "to dig a deeper central lake.")]
+    [Range(0f, 4f)] public float basinStrength = 1.0f;
+    [Tooltip("Basin radius as a fraction of half the map (1 = reaches the edges). " +
+             "Larger = wider lake.")]
+    [Range(0.1f, 1.5f)] public float basinRadius = 0.7f;
+
     // Single source of truth for terrain height. Sized (width+1) x (depth+1) to match
-    // the mesh vertex grid. Stores RAW noise values; HeightAt() applies the multiplier.
+    // the mesh vertex grid. Stores RAW noise values (with the basin already applied);
+    // HeightAt() applies the multiplier so mesh and grid stay in lock-step.
     public float[,] Heights { get; private set; }
 
     void Start()
@@ -88,6 +108,19 @@ public class TerrainGenerator : MonoBehaviour
                     value += sample * amplitude;
                     amplitude *= persistence;
                     frequency *= lacunarity;
+                }
+
+                // Central basin: subtract a smooth dome (max at centre, 0 past basinRadius)
+                // so the middle dips below waterLevel and forms a contestable central lake.
+                // Applied in raw space so the mesh, HeightAt(), and the grid all see it.
+                if (basinStrength > 0f && basinRadius > 0f)
+                {
+                    float nx = (vx > 1) ? (x / (float)(vx - 1)) * 2f - 1f : 0f; // -1..1
+                    float nz = (vz > 1) ? (z / (float)(vz - 1)) * 2f - 1f : 0f;
+                    float dist = Mathf.Sqrt(nx * nx + nz * nz);
+                    float t = Mathf.Clamp01(1f - dist / basinRadius);
+                    float dome = t * t * (3f - 2f * t); // smoothstep
+                    value -= basinStrength * dome;
                 }
 
                 h[x, z] = value;

@@ -1,5 +1,5 @@
 // Agent.cs
-// Version: 0.6 (added Hunger; includes v0.5 inventory)
+// Version: 0.7 (added StoneCarried; AddResource/inventory now cover Wood/Food/Stone)
 // Purpose: Plain-C# simulation agent (NPC). Continuous position, speed-based movement,
 //          resource inventory, and a hunger float drained each tick by AgentBehavior.
 //          Pure sim state; no MonoBehaviour, no rendering.
@@ -31,15 +31,20 @@ public class Agent
     public int CarryCapacity = 3;
     public int WoodCarried   { get; private set; }
     public int FoodCarried   { get; private set; }
-    public bool InventoryFull => (WoodCarried + FoodCarried) >= CarryCapacity;
+    public int StoneCarried  { get; private set; }
+    public bool InventoryFull => (WoodCarried + FoodCarried + StoneCarried) >= CarryCapacity;
 
     public void AddResource(ResourceType type, int amount)
     {
-        if (type == ResourceType.Wood) WoodCarried += amount;
-        else                           FoodCarried += amount;
+        switch (type)
+        {
+            case ResourceType.Wood:  WoodCarried  += amount; break;
+            case ResourceType.Food:  FoodCarried  += amount; break;
+            case ResourceType.Stone: StoneCarried += amount; break;
+        }
     }
 
-    public void ClearInventory() { WoodCarried = 0; FoodCarried = 0; }
+    public void ClearInventory() { WoodCarried = 0; FoodCarried = 0; StoneCarried = 0; }
 
     // ── Path / movement ───────────────────────────────────────────────────────
     private List<Vector2Int> path;

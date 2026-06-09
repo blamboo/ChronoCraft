@@ -1,5 +1,5 @@
 // ResourceNode.cs
-// Version: 0.4 (initial)
+// Version: 0.5 (added Stone to ResourceType for the Miner / ore slice)
 // Purpose: Plain-C# resource node for the TimeCraft prototype. Stores a node's type,
 //          cell position, and remaining stock. Passive sim data -- no ticking, no
 //          rendering. Agents harvest from it; stock decreases until depleted.
@@ -8,7 +8,7 @@
 // Dependencies: System only.
 // Events: none.
 
-public enum ResourceType { Wood, Food }
+public enum ResourceType { Wood, Food, Stone }
 
 public class ResourceNode
 {

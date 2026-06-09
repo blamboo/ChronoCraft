@@ -1,5 +1,6 @@
 // AgentBehavior.cs
-// Version: 0.7 (resource reservation: agents claim a node so only one gathers it at a time)
+// Version: 0.8 (civ-scoped structures: agents build/shelter at their OWN civ's structure)
+// (v0.7: resource reservation -- one agent per node.)
 // Purpose: Plain-C# state machine driving the prototype NPC through its full lifecycle:
 //          gather wood -> walk to build site -> build shelter -> shelter inside ->
 //          hunger drains each tick -> leave to gather food -> eat -> return home -> repeat.
@@ -171,7 +172,7 @@ public class AgentBehavior
 
     void TryMoveToSite()
     {
-        var structure = sim.StructureNodes.Find(n => !n.IsBuilt);
+        var structure = sim.StructureNodes.Find(n => n.Civ == agent.Civ && !n.IsBuilt);
         if (structure == null)
         {
             // Structure not placed yet; drop wood and re-gather once it exists.
@@ -190,7 +191,7 @@ public class AgentBehavior
 
     void TryReturnHome()
     {
-        var structure = sim.StructureNodes.Find(n => n.IsBuilt);
+        var structure = sim.StructureNodes.Find(n => n.Civ == agent.Civ && n.IsBuilt);
         if (structure == null) { CurrentState = State.InHome; return; }
         var path = Pathfinder.FindPath(grid,
             new Vector2Int(agent.CellX,    agent.CellZ),

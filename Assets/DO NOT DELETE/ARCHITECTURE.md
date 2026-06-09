@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.11)
+# TimeCraft — Architecture Document (v0.12)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -11,6 +11,12 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.12: per-civ structures (A3b complete). StructureNode carries a CivId;
+Simulation gains a civ registry (Civs / RegisterCiv) seeded by AgentManager with each
+civ's spawn anchor; StructureManager places one structure per civ near its anchor and
+animates each; AgentBehavior builds/shelters only at its OWN civ's structure. The two
+civs no longer share a structure -- each forms its own camp.
 
 Changes in v0.11: resource reservation. ResourceNode gains ClaimedBy / TryClaim /
 Release; AgentBehavior targets the nearest UNCLAIMED node, reserves it, and releases it
@@ -104,14 +110,15 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
   and hills are unwalkable so paths route around them). [Diagonal: see deferred-tech.]
 - Agent.cs — Plain C#. NPC: Civ (CivId), continuous position (PosX/PosZ), CellX/CellZ,
   Speed, Hunger (per tick), inventory (Wood/Food/Stone Carried, CarryCapacity).
-- AgentManager.cs — MonoBehaviour bridge. Spawns agentsPerCiv agents for Civ1 and Civ2
-  at opposite edges (ring-out from each anchor), tints capsules by civ, attaches an
-  AgentBehavior (v1 brain) to each, and syncs all capsules each frame. A3a transitional:
-  shared structure + shared resources (clump expected); per-civ structures = A3b.
-- Civ.cs — Plain C#. CivId enum (None/Civ1/Civ2); civ identity carried by Agent.
+- AgentManager.cs — MonoBehaviour bridge. Registers each civ's spawn anchor in the sim,
+  spawns agentsPerCiv agents for Civ1 and Civ2 at opposite edges (ring-out from each
+  anchor), tints capsules by civ, attaches an AgentBehavior to each, syncs all capsules.
+- Civ.cs — Plain C#. CivId enum (None/Civ1/Civ2) + CivState (per-civ record with spawn
+  anchor). Civ identity carried by Agent and StructureNode.
 - SimulationClock.cs — Plain C#. Tick counter; derives Day and TickOfDay.
-- Simulation.cs — Plain C#. Sim root; owns Agents, ResourceNodes, StructureNodes,
-  AgentBehaviors; Advance(dt) runs the advance order above.
+- Simulation.cs — Plain C#. Sim root; owns Civs (registry + RegisterCiv), Agents,
+  ResourceNodes, StructureNodes, AgentBehaviors; AddStructureNode takes a CivId;
+  Advance(dt) runs the advance order above.
 - SimulationRunner.cs — MonoBehaviour bridge. Fixed-step loop; secondsPerDay +
   ticksPerDay (Play start); timeScale (live); exposes Sim.
 - ResourceNode.cs — Plain C#. Passive sim data: Type (Wood/Food/Stone), cell, Amount,
@@ -119,16 +126,18 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - ResourceManager.cs — MonoBehaviour bridge. Seed-based scatter: Wood/Food on walkable
   cells (marked occupied), Stone on reachable unwalkable hill cells; placeholder
   primitives (brown cube=wood, green sphere=food, grey cube=stone).
-- StructureNode.cs — Plain C#. Build-site data: WoodRequired, WoodDeposited,
+- StructureNode.cs — Plain C#. Build-site data: Civ (owner), WoodRequired, WoodDeposited,
   BuildProgress (0..1 continuous timer), IsBuilt. DepositWood + AdvanceBuild.
-- StructureManager.cs — MonoBehaviour bridge. Registers StructureNode in sim; marks cell
-  occupied; spawns placeholder cube that animates (flat→tall) with BuildProgress.
+- StructureManager.cs — MonoBehaviour bridge. Once sim.Civs is populated, places ONE
+  StructureNode per civ on a free walkable cell near that civ's anchor, marks it occupied,
+  and spawns/animates a placeholder cube per site (flat→tall with BuildProgress).
 - AgentBehavior.cs — Plain C#. Full NPC lifecycle FSM (10 states):
     SeekWood → MoveToWood → HarvestWood (10 s timer) →
     MoveToSite → Building (20 s timer, AdvanceBuild) →
     InHome → SeekFood → MoveToFood → HarvestFood (10 s timer, resets hunger) →
     ReturnHome → InHome (loop).
   Hunger drains each OnTick (tick-based); movement and timers are continuous.
+  Structure lookups are civ-scoped (builds/shelters at agent.Civ's own structure).
   NOTE: this monolithic FSM is the v1 brain; Phase B replaces its fixed ordering with
   the GDD S7 needs/decision-priority model. Does not mine (no Miner job yet).
 
@@ -136,15 +145,15 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 
 - Sim spine: SimulationRunner → Simulation.Advance(FixedStep). OnTick / OnDayChanged
   are the event bus; stat drains and future systems subscribe.
-- Agent lifecycle: AgentManager spawns 12 agents per civ (Civ1/Civ2), each with its own
-  AgentBehavior (v1 brain). Behavior owns all NPC logic; AgentManager mirrors positions.
-  Transitional: all agents target the single shared structure (sim.StructureNodes) and
-  shared resource nodes regardless of civ; civ-scoped structures arrive in A3b.
+- Agent lifecycle: AgentManager registers civ anchors, then spawns 12 agents per civ
+  (Civ1/Civ2), each with its own AgentBehavior. Behavior owns all NPC logic; AgentManager
+  mirrors positions. Resource nodes are shared/contested; structures are civ-scoped.
 - Resource loop: AgentBehavior.TrySeekResource picks the nearest UNCLAIMED node →
   ResourceNode.TryClaim → Pathfinder → agent.SetPath → arrive → harvestTimer →
   ResourceNode.Harvest → ReleaseNode → inventory → TryMoveToSite. One agent per node.
-- Build loop: TryMoveToSite → StructureNode.DepositWood → AdvanceBuild each step →
-  IsBuilt → InHome. StructureManager reads BuildProgress each frame for visuals.
+- Build loop: TryMoveToSite finds the agent's OWN-civ unbuilt structure → DepositWood →
+  AdvanceBuild each step → IsBuilt → InHome (own-civ built structure). StructureManager
+  reads each site's BuildProgress for visuals.
 - Hunger loop: OnTick → agent.Hunger += drain → InHome check → SeekFood → HarvestFood
   → agent.Hunger = 0 → ReturnHome → InHome.
 - GridData.SetOccupied used by ResourceManager (resource cells) and StructureManager
@@ -162,3 +171,4 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - "Agents": AgentManager → runner=Simulation, gridManager=ProceduralTerrain.
 - "Resources": ResourceManager → runner=Simulation, gridManager=ProceduralTerrain.
 - "Structure": StructureManager → runner=Simulation, gridManager=ProceduralTerrain.
+  Spawns one structure cube per civ at runtime (placed near each civ's spawn anchor).

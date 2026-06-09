@@ -1,10 +1,10 @@
 // Simulation.cs
-// Version: 0.6 (replaced GathererBehaviors with AgentBehaviors; added StructureNodes)
-// Purpose: Plain-C# sim root. Owns Agents, ResourceNodes, StructureNodes, and
+// Version: 0.7 (added civ registry: Civs + RegisterCiv; AddStructureNode now takes CivId)
+// Purpose: Plain-C# sim root. Owns Civs, Agents, ResourceNodes, StructureNodes, and
 //          AgentBehaviors. Advances all per fixed step. Two independent cadences:
 //          continuous movement and discrete tick (hunger drain, day clock).
 // Location: Assets/Scripts/Simulation/Simulation.cs
-// Dependencies: System; System.Collections.Generic; SimulationClock; Agent;
+// Dependencies: System; System.Collections.Generic; SimulationClock; Agent; CivId/CivState;
 //               ResourceNode; StructureNode; AgentBehavior; GridData.
 // Events emitted: OnTick; OnDayChanged(int).
 
@@ -13,9 +13,10 @@ using System.Collections.Generic;
 
 public class Simulation
 {
-    public SimulationClock    Clock          { get; }
-    public List<Agent>        Agents         { get; } = new List<Agent>();
-    public List<ResourceNode> ResourceNodes  { get; } = new List<ResourceNode>();
+    public SimulationClock     Clock          { get; }
+    public List<CivState>      Civs           { get; } = new List<CivState>();
+    public List<Agent>         Agents         { get; } = new List<Agent>();
+    public List<ResourceNode>  ResourceNodes  { get; } = new List<ResourceNode>();
     public List<StructureNode> StructureNodes { get; } = new List<StructureNode>();
     public List<AgentBehavior> AgentBehaviors { get; } = new List<AgentBehavior>();
 
@@ -32,6 +33,15 @@ public class Simulation
         SecondsPerTick = Math.Max(0.0001, secondsPerDay) / Math.Max(1, ticksPerDay);
     }
 
+    // Registers a civ and its spawn anchor cell. Read by systems that need a civ's home
+    // (e.g. StructureManager places one structure per civ near its anchor).
+    public CivState RegisterCiv(CivId id, int anchorX, int anchorZ)
+    {
+        var c = new CivState(id, anchorX, anchorZ);
+        Civs.Add(c);
+        return c;
+    }
+
     public Agent AddAgent(int startX, int startZ)
     {
         var a = new Agent(startX, startZ);
@@ -46,10 +56,10 @@ public class Simulation
         return n;
     }
 
-    public StructureNode AddStructureNode(int cellX, int cellZ, int woodRequired,
+    public StructureNode AddStructureNode(CivId civ, int cellX, int cellZ, int woodRequired,
                                           float buildDurationSeconds)
     {
-        var s = new StructureNode(cellX, cellZ, woodRequired, buildDurationSeconds);
+        var s = new StructureNode(civ, cellX, cellZ, woodRequired, buildDurationSeconds);
         StructureNodes.Add(s);
         return s;
     }

@@ -1,15 +1,16 @@
 // StructureNode.cs
-// Version: 0.6 (initial)
-// Purpose: Plain-C# build-site data for the TimeCraft prototype. Tracks deposited
-//          wood, build progress (continuous game-time timer), and completion state.
+// Version: 0.7 (added Civ: each structure belongs to one civilization)
+// Purpose: Plain-C# build-site data for the TimeCraft prototype. Tracks owning civ,
+//          deposited wood, build progress (continuous game-time timer), and completion.
 //          Passive until an agent calls DepositWood then AdvanceBuild each sim step.
 //          No MonoBehaviour, no rendering.
 // Location: Assets/Scripts/Simulation/StructureNode.cs
-// Dependencies: System only.
+// Dependencies: System; CivId.
 // Events: none.
 
 public class StructureNode
 {
+    public CivId Civ                 { get; }
     public int   CellX               { get; }
     public int   CellZ               { get; }
     public int   WoodRequired        { get; }
@@ -19,8 +20,9 @@ public class StructureNode
     public bool  HasEnoughWood       => WoodDeposited >= WoodRequired;
     public bool  IsBuilt             => BuildProgress >= 1f;
 
-    public StructureNode(int cellX, int cellZ, int woodRequired, float buildDurationSeconds)
+    public StructureNode(CivId civ, int cellX, int cellZ, int woodRequired, float buildDurationSeconds)
     {
+        Civ                  = civ;
         CellX                = cellX;
         CellZ                = cellZ;
         WoodRequired         = woodRequired;

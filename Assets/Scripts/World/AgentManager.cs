@@ -1,6 +1,6 @@
 // AgentManager.cs
-// Version: 0.7 (multi-civ spawn: N agents per civ at opposite edges, tinted by civ;
-//               hunger drain default retuned for ticksPerDay 450)
+// Version: 0.8 (registers each civ's spawn anchor in the sim so StructureManager can
+//               place one structure per civ; v0.7 multi-civ spawn + hunger retune)
 // Purpose: Unity bridge that bootstraps the two-civ population. Spawns agentsPerCiv
 //          agents for Civ1 and Civ2 at opposite map edges, tints each civ's placeholder
 //          capsules, attaches an AgentBehavior to each (the v1 brain), and each frame
@@ -89,6 +89,9 @@ public class AgentManager : MonoBehaviour
     // so the group clusters. Returns the number actually placed.
     int SpawnCiv(Simulation sim, GridData grid, CivId civ, Vector2Int anchor, Color color)
     {
+        // Record this civ's home anchor so StructureManager places its structure here.
+        sim.RegisterCiv(civ, anchor.x, anchor.y);
+
         int placed = 0;
         int maxR = Mathf.Max(grid.Width, grid.Depth);
         for (int r = 0; r <= maxR && placed < agentsPerCiv; r++)

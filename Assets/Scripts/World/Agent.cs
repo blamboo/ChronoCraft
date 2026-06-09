@@ -1,10 +1,10 @@
 // Agent.cs
-// Version: 0.5 (added inventory: WoodCarried, FoodCarried, CarryCapacity)
-// Purpose: Plain-C# simulation agent (NPC) for the TimeCraft prototype. Holds a
-//          continuous position in cell space, walks its path at Speed (cells/sec),
-//          and now carries a small resource inventory. Pure sim state.
-// Location: Assets/Scripts/Simulation/Agent.cs
-// Dependencies: System.Collections.Generic; UnityEngine for Vector2Int/Mathf only.
+// Version: 0.6 (added Hunger; includes v0.5 inventory)
+// Purpose: Plain-C# simulation agent (NPC). Continuous position, speed-based movement,
+//          resource inventory, and a hunger float drained each tick by AgentBehavior.
+//          Pure sim state; no MonoBehaviour, no rendering.
+// Location: Assets/Scripts/World/Agent.cs
+// Dependencies: System.Collections.Generic; UnityEngine (Vector2Int/Mathf only).
 // Events: none. Advanced by Simulation.Advance(dt) each fixed sim step.
 
 using System.Collections.Generic;
@@ -12,22 +12,25 @@ using UnityEngine;
 
 public class Agent
 {
-    // Movement speed in cells per game-second. NOT tied to the tick/day rate.
+    // Movement speed in cells per game-second. NOT tied to tick rate.
     public float Speed = 3f;
 
     // Continuous position in cell space.
     public float PosX { get; private set; }
     public float PosZ { get; private set; }
 
-    // Nearest logical cell for systems that need a discrete cell.
+    // Nearest logical cell for systems that need a discrete address.
     public int CellX => Mathf.RoundToInt(PosX);
     public int CellZ => Mathf.RoundToInt(PosZ);
 
-    // ── Inventory ──────────────────────────────────────────────────────────────
-    // Max total units the agent can carry before needing to drop off.
+    // ── Hunger ────────────────────────────────────────────────────────────────
+    // Drained each logical tick by AgentBehavior. Range 0..100.
+    public float Hunger = 0f;
+
+    // ── Inventory ─────────────────────────────────────────────────────────────
     public int CarryCapacity = 3;
-    public int WoodCarried { get; private set; }
-    public int FoodCarried { get; private set; }
+    public int WoodCarried   { get; private set; }
+    public int FoodCarried   { get; private set; }
     public bool InventoryFull => (WoodCarried + FoodCarried) >= CarryCapacity;
 
     public void AddResource(ResourceType type, int amount)
@@ -36,15 +39,9 @@ public class Agent
         else                           FoodCarried += amount;
     }
 
-    // Clears carried resources. Temporarily used by GathererBehavior until a real
-    // drop-off destination exists (construction slice).
-    public void ClearInventory()
-    {
-        WoodCarried = 0;
-        FoodCarried = 0;
-    }
+    public void ClearInventory() { WoodCarried = 0; FoodCarried = 0; }
 
-    // ── Path / movement ────────────────────────────────────────────────────────
+    // ── Path / movement ───────────────────────────────────────────────────────
     private List<Vector2Int> path;
     private int nextIndex;
 
@@ -65,16 +62,12 @@ public class Agent
             PosZ      = path[0].y;
             nextIndex = 1;
         }
-        else
-        {
-            nextIndex = 0;
-        }
+        else nextIndex = 0;
     }
 
     public void Advance(float dt)
     {
         if (!HasPath) return;
-
         float budget = Speed * dt;
         while (budget > 0f && HasPath)
         {
@@ -82,19 +75,15 @@ public class Agent
             float dx   = target.x - PosX;
             float dz   = target.y - PosZ;
             float dist = Mathf.Sqrt(dx * dx + dz * dz);
-
             if (dist <= budget)
             {
-                PosX   = target.x;
-                PosZ   = target.y;
-                budget -= dist;
-                nextIndex++;
+                PosX = target.x; PosZ = target.y;
+                budget -= dist; nextIndex++;
             }
             else
             {
                 float inv = budget / dist;
-                PosX  += dx * inv;
-                PosZ  += dz * inv;
+                PosX += dx * inv; PosZ += dz * inv;
                 budget = 0f;
             }
         }

@@ -1,22 +1,23 @@
 // Simulation.cs
-// Version: 0.5 (added GathererBehaviors list; Update called in Advance)
-// Purpose: Plain-C# sim root. Owns Agents, ResourceNodes, and GathererBehaviors.
-//          Advances all three every fixed step. Movement is continuous; stat ticks
-//          and harvesting are discrete (derived from accumulated game-time).
+// Version: 0.6 (replaced GathererBehaviors with AgentBehaviors; added StructureNodes)
+// Purpose: Plain-C# sim root. Owns Agents, ResourceNodes, StructureNodes, and
+//          AgentBehaviors. Advances all per fixed step. Two independent cadences:
+//          continuous movement and discrete tick (hunger drain, day clock).
 // Location: Assets/Scripts/Simulation/Simulation.cs
 // Dependencies: System; System.Collections.Generic; SimulationClock; Agent;
-//               ResourceNode; GathererBehavior; GridData.
-// Events emitted: OnTick; OnDayChanged(int). Consumed: none.
+//               ResourceNode; StructureNode; AgentBehavior; GridData.
+// Events emitted: OnTick; OnDayChanged(int).
 
 using System;
 using System.Collections.Generic;
 
 public class Simulation
 {
-    public SimulationClock    Clock             { get; }
-    public List<Agent>        Agents            { get; } = new List<Agent>();
-    public List<ResourceNode> ResourceNodes     { get; } = new List<ResourceNode>();
-    public List<GathererBehavior> GathererBehaviors { get; } = new List<GathererBehavior>();
+    public SimulationClock    Clock          { get; }
+    public List<Agent>        Agents         { get; } = new List<Agent>();
+    public List<ResourceNode> ResourceNodes  { get; } = new List<ResourceNode>();
+    public List<StructureNode> StructureNodes { get; } = new List<StructureNode>();
+    public List<AgentBehavior> AgentBehaviors { get; } = new List<AgentBehavior>();
 
     public double SecondsPerTick { get; }
 
@@ -45,27 +46,32 @@ public class Simulation
         return n;
     }
 
-    public GathererBehavior AddGathererBehavior(Agent agent, GridData grid,
-                                                ResourceType targetType = ResourceType.Wood)
+    public StructureNode AddStructureNode(int cellX, int cellZ, int woodRequired,
+                                          float buildDurationSeconds)
     {
-        var b = new GathererBehavior(agent, this, grid, targetType);
-        GathererBehaviors.Add(b);
+        var s = new StructureNode(cellX, cellZ, woodRequired, buildDurationSeconds);
+        StructureNodes.Add(s);
+        return s;
+    }
+
+    public AgentBehavior AddAgentBehavior(Agent agent, GridData grid)
+    {
+        var b = new AgentBehavior(agent, this, grid);
+        AgentBehaviors.Add(b);
         return b;
     }
 
-    // Advance order within each fixed step:
+    // Advance order per fixed step:
     //   1. Agent movement (continuous).
-    //   2. Behavior state-machine updates (arrival checks, seek throttle).
-    //   3. Tick cadence (fires OnTick, which behavior.OnTick catches for harvesting).
-    // This ordering means an agent that arrives at a node this step can harvest on the
-    // very first tick that fires in the same step.
+    //   2. AgentBehavior updates (state transitions, build timer, harvest timer).
+    //   3. Tick cadence (OnTick fires hunger drain and future stats).
     public void Advance(double dt)
     {
         for (int i = 0; i < Agents.Count; i++)
             Agents[i].Advance((float)dt);
 
-        for (int i = 0; i < GathererBehaviors.Count; i++)
-            GathererBehaviors[i].Update((float)dt);
+        for (int i = 0; i < AgentBehaviors.Count; i++)
+            AgentBehaviors[i].Update((float)dt);
 
         tickAccumulator += dt;
         while (tickAccumulator >= SecondsPerTick)
@@ -73,8 +79,7 @@ public class Simulation
             tickAccumulator -= SecondsPerTick;
             bool newDay = Clock.Advance();
             OnTick?.Invoke();
-            if (newDay)
-                OnDayChanged?.Invoke(Clock.Day);
+            if (newDay) OnDayChanged?.Invoke(Clock.Day);
         }
     }
 }

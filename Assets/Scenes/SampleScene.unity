@@ -842,6 +842,56 @@ MonoBehaviour:
   running: 1
   currentDay: 0
   currentTickOfDay: 0
+--- !u!1 &1877883182
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1877883184}
+  - component: {fileID: 1877883183}
+  m_Layer: 0
+  m_Name: Structure
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1877883183
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1877883182}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b99a2ce84ea09fbba84f5d8081af82de, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::StructureManager
+  runner: {fileID: 1351721462}
+  gridManager: {fileID: 847778606}
+  buildSiteCell: {x: 32, y: 32}
+  woodRequired: 3
+  buildDurationSeconds: 20
+  buildProgress: 0
+--- !u!4 &1877883184
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1877883182}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -48.84363, y: 0, z: -26.95907}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &2126246150
 GameObject:
   m_ObjectHideFlags: 0
@@ -876,7 +926,13 @@ MonoBehaviour:
   agentSpeed: 3
   yOffset: 1
   startCell: {x: 16, y: 16}
-  targetCell: {x: 48, y: 48}
+  harvestDurationSeconds: 10
+  hungerDrainPerTick: 10
+  hungerThreshold: 50
+  agentState: 
+  woodCarried: 0
+  foodCarried: 0
+  hunger: 0
 --- !u!4 &2126246152
 Transform:
   m_ObjectHideFlags: 0
@@ -903,3 +959,4 @@ SceneRoots:
   - {fileID: 1351721461}
   - {fileID: 2126246152}
   - {fileID: 137620821}
+  - {fileID: 1877883184}

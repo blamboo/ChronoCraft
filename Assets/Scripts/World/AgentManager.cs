@@ -1,11 +1,10 @@
 // AgentManager.cs
-// Version: 0.5 (patrol replaced by GathererBehavior; added inventory read-outs)
-// Purpose: Unity bridge for prototype agents. Spawns one Agent, attaches a
-//          GathererBehavior to drive it, and each frame snaps the placeholder capsule
-//          to the agent's continuous position and mirrors state/inventory to the
-//          Inspector for live observation. No sim logic lives here.
-// Location: Assets/Scripts/Simulation/AgentManager.cs
-// Dependencies: UnityEngine; SimulationRunner, GridManager, Agent, GathererBehavior.
+// Version: 0.6 (wired to AgentBehavior; hunger and state read-outs; patrol removed)
+// Purpose: Unity bridge for the prototype NPC. Spawns one Agent, attaches an
+//          AgentBehavior, and each frame syncs the placeholder capsule to the agent's
+//          continuous position and mirrors state, inventory, and hunger to the Inspector.
+// Location: Assets/Scripts/World/AgentManager.cs
+// Dependencies: UnityEngine; SimulationRunner, GridManager, Agent, AgentBehavior.
 // Events: none.
 
 using UnityEngine;
@@ -19,36 +18,46 @@ public class AgentManager : MonoBehaviour
     [SerializeField] private GridManager gridManager;
 
     [Header("Agent")]
-    [Tooltip("NPC movement speed in cells per game-second. Independent of tick rate.")]
+    [Tooltip("Movement speed in cells per game-second (independent of tick rate).")]
     [Range(0.25f, 20f)]
     [SerializeField] private float agentSpeed = 3f;
     [Tooltip("Vertical offset so the capsule sits on the surface.")]
     [SerializeField] private float yOffset = 1f;
     [Tooltip("Spawn cell (snapped to nearest walkable).")]
     [SerializeField] private Vector2Int startCell = new Vector2Int(16, 16);
-    [Tooltip("Which resource type this agent gathers.")]
-    [SerializeField] private ResourceType targetResourceType = ResourceType.Wood;
+
+    [Header("Behavior tuning")]
+    [Tooltip("Game-seconds spent at a resource node per gathering visit.")]
+    [Range(1f, 60f)]
+    [SerializeField] private float harvestDurationSeconds = 10f;
+    [Tooltip("Hunger added per logical tick. Tick rate set on the Simulation object.")]
+    [Range(1f, 50f)]
+    [SerializeField] private float hungerDrainPerTick = 10f;
+    [Tooltip("Hunger level (0-100) that triggers the agent to seek food.")]
+    [Range(1f, 100f)]
+    [SerializeField] private float hungerThreshold = 50f;
 
     [Header("Read-out (Play mode -- editing has no effect)")]
     [SerializeField] private string agentState;
     [SerializeField] private int    woodCarried;
     [SerializeField] private int    foodCarried;
+    [SerializeField] private float  hunger;
 
-    private Agent            agent;
-    private GathererBehavior behavior;
-    private Transform        view;
-    private bool             initialized;
+    private Agent        agent;
+    private AgentBehavior behavior;
+    private Transform    view;
+    private bool         initialized;
 
     void Update()
     {
         if (!initialized) { TryInitialize(); if (!initialized) return; }
 
-        // Mirror sim state to the Inspector for live observation.
         if (behavior != null)
         {
             agentState  = behavior.CurrentState.ToString();
             woodCarried = agent.WoodCarried;
             foodCarried = agent.FoodCarried;
+            hunger      = agent.Hunger;
         }
 
         SyncView();
@@ -61,10 +70,14 @@ public class AgentManager : MonoBehaviour
         Simulation sim  = runner.Sim;
         if (grid == null || sim == null) return;
 
-        Vector2Int spawnCell = NearestWalkable(grid, startCell);
-        agent           = sim.AddAgent(spawnCell.x, spawnCell.y);
-        agent.Speed     = agentSpeed;
-        behavior        = sim.AddGathererBehavior(agent, grid, targetResourceType);
+        Vector2Int spawn = NearestWalkable(grid, startCell);
+        agent       = sim.AddAgent(spawn.x, spawn.y);
+        agent.Speed = agentSpeed;
+
+        behavior = sim.AddAgentBehavior(agent, grid);
+        behavior.HarvestDurationSeconds = harvestDurationSeconds;
+        behavior.HungerDrainPerTick     = hungerDrainPerTick;
+        behavior.HungerThreshold        = hungerThreshold;
 
         view      = GameObject.CreatePrimitive(PrimitiveType.Capsule).transform;
         view.name = "Agent (placeholder)";
@@ -79,8 +92,7 @@ public class AgentManager : MonoBehaviour
     {
         if (view == null) return;
         Vector3 local = gridManager.Grid.ContinuousToLocal(agent.PosX, agent.PosZ);
-        Vector3 world = gridManager.transform.TransformPoint(local);
-        view.position = world + Vector3.up * yOffset;
+        view.position = gridManager.transform.TransformPoint(local) + Vector3.up * yOffset;
     }
 
     Vector2Int NearestWalkable(GridData grid, Vector2Int c)
@@ -88,7 +100,6 @@ public class AgentManager : MonoBehaviour
         c.x = Mathf.Clamp(c.x, 0, grid.Width  - 1);
         c.y = Mathf.Clamp(c.y, 0, grid.Depth  - 1);
         if (grid.Cells[c.x, c.y].Walkable) return c;
-
         int maxR = Mathf.Max(grid.Width, grid.Depth);
         for (int r = 1; r <= maxR; r++)
         for (int dz = -r; dz <= r; dz++)
@@ -102,8 +113,5 @@ public class AgentManager : MonoBehaviour
         return c;
     }
 
-    void OnDestroy()
-    {
-        behavior?.Dispose();
-    }
+    void OnDestroy() => behavior?.Dispose();
 }

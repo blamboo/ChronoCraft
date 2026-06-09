@@ -1,13 +1,11 @@
 // GridData.cs
-// Version: 0.3 (added ContinuousToLocal for smooth agent movement)
+// Version: 0.4 (added SetOccupied helper to handle struct read-modify-write cleanly)
 // Purpose: Plain-C# logical grid for the TimeCraft prototype. Holds one cell per
 //          terrain quad (height, walkability, occupancy) plus the cell<->local
-//          mapping. This is simulation/spatial data, deliberately decoupled from
-//          MonoBehaviours and rendering per the architecture principle, so it can
-//          later move to DOTS and be snapshotted for time-rewind.
+//          mapping. Deliberately decoupled from MonoBehaviours and rendering per the
+//          architecture principle; snapshot-friendly for time-rewind.
 // Location: Assets/Scripts/World/GridData.cs
-// Dependencies: UnityEngine for the Vector math types only (Vector3, Vector2Int).
-//               No MonoBehaviour, no rendering, no scene references.
+// Dependencies: UnityEngine for Vector math types only. No MonoBehaviour, no rendering.
 // Events: none. Owned and driven by GridManager.
 
 using UnityEngine;
@@ -16,13 +14,13 @@ public struct GridCell
 {
     public float Height;   // local-space Y of the cell centre (matches the terrain mesh)
     public bool Walkable;  // false if the cell is too steep to traverse
-    public bool Occupied;  // reserved: set later when a building/resource claims the cell
+    public bool Occupied;  // true when a building or resource node claims the cell
 }
 
 public class GridData
 {
-    public int Width { get; private set; }
-    public int Depth { get; private set; }
+    public int   Width    { get; private set; }
+    public int   Depth    { get; private set; }
     public float CellSize { get; private set; }
 
     // Centering offsets, identical to the terrain mesh so the grid lines up with it.
@@ -31,19 +29,19 @@ public class GridData
 
     public GridCell[,] Cells { get; private set; }
 
-    // Builds the grid from the terrain's per-vertex local heights (already post
-    // height-multiplier). 'vertexHeights' is sized (Width+1) x (Depth+1).
+    // Builds the grid from the terrain's per-vertex local heights (post height-multiplier).
+    // 'vertexHeights' is sized (Width+1) x (Depth+1).
     // A cell is unwalkable if the height spread across its four corners exceeds
-    // maxStepHeight (world units), which is how steep terrain is flagged.
+    // maxStepHeight (world units).
     public void Build(float[,] vertexHeights, float cellSize, float maxStepHeight)
     {
         int vx = vertexHeights.GetLength(0);
         int vz = vertexHeights.GetLength(1);
-        Width = vx - 1;
-        Depth = vz - 1;
+        Width    = vx - 1;
+        Depth    = vz - 1;
         CellSize = cellSize;
-        OffsetX = Width * cellSize * 0.5f;
-        OffsetZ = Depth * cellSize * 0.5f;
+        OffsetX  = Width * cellSize * 0.5f;
+        OffsetZ  = Depth * cellSize * 0.5f;
 
         Cells = new GridCell[Width, Depth];
 
@@ -62,7 +60,7 @@ public class GridData
 
                 Cells[x, z] = new GridCell
                 {
-                    Height = avg,
+                    Height   = avg,
                     Walkable = (max - min) <= maxStepHeight,
                     Occupied = false
                 };
@@ -72,23 +70,32 @@ public class GridData
 
     public bool InBounds(int x, int z) => x >= 0 && x < Width && z >= 0 && z < Depth;
 
-    // Local-space centre of a cell, relative to the grid/terrain object's transform.
+    // Sets the Occupied flag without exposing the struct read-modify-write to callers.
+    public void SetOccupied(int x, int z, bool occupied)
+    {
+        if (!InBounds(x, z)) return;
+        var cell     = Cells[x, z];
+        cell.Occupied = occupied;
+        Cells[x, z]  = cell;
+    }
+
+    // Local-space centre of a cell, relative to the terrain object's transform.
     public Vector3 CellToLocal(int x, int z)
     {
         float h = InBounds(x, z) ? Cells[x, z].Height : 0f;
-        return new Vector3((x + 0.5f) * CellSize - OffsetX, h, (z + 0.5f) * CellSize - OffsetZ);
+        return new Vector3((x + 0.5f) * CellSize - OffsetX, h,
+                           (z + 0.5f) * CellSize - OffsetZ);
     }
 
-    // Local-space position for a CONTINUOUS grid coordinate (gx, gz in cell units), used
-    // by smooth agent movement. Horizontal interpolates with the coordinate; height uses
-    // the cell the point sits in (bilinear height smoothing deferred -- negligible on the
-    // low-slope walkable cells agents traverse).
+    // Local-space position for a CONTINUOUS grid coordinate (gx, gz in cell units),
+    // used by smooth agent movement. Height uses the nearest cell (bilinear deferred).
     public Vector3 ContinuousToLocal(float gx, float gz)
     {
-        int cx = Mathf.Clamp(Mathf.RoundToInt(gx), 0, Width - 1);
-        int cz = Mathf.Clamp(Mathf.RoundToInt(gz), 0, Depth - 1);
+        int cx = Mathf.Clamp(Mathf.RoundToInt(gx), 0, Width  - 1);
+        int cz = Mathf.Clamp(Mathf.RoundToInt(gz), 0, Depth  - 1);
         float h = Cells[cx, cz].Height;
-        return new Vector3((gx + 0.5f) * CellSize - OffsetX, h, (gz + 0.5f) * CellSize - OffsetZ);
+        return new Vector3((gx + 0.5f) * CellSize - OffsetX, h,
+                           (gz + 0.5f) * CellSize - OffsetZ);
     }
 
     // Local-space position -> the cell that contains it (may be out of bounds; check InBounds).

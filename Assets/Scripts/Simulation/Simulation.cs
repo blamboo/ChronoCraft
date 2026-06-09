@@ -1,15 +1,15 @@
 // Simulation.cs
-// Version: 0.3 (continuous game-time; movement decoupled from derived day/stat ticks)
+// Version: 0.4 (added ResourceNodes list and AddResourceNode)
 // Purpose: Plain-C# root of the TimeCraft prototype simulation. Runs on a single
 //          continuous game-time source advanced in fixed steps. Two INDEPENDENT cadences
 //          derive from it: continuous agent movement (every step) and a discrete
-//          day/stat tick (every SecondsPerTick of game-time) on which hunger and other
-//          over-time stats will drain. Contains no MonoBehaviour and no UnityEngine
-//          references beyond value types -- the sim/render boundary the locked
-//          architecture principle protects.
+//          day/stat tick (every SecondsPerTick of game-time) for over-time stat drains.
+//          Owns Agents and ResourceNodes as plain sim state.
+//          Contains no MonoBehaviour and no UnityEngine beyond value types.
 // Location: Assets/Scripts/Simulation/Simulation.cs
-// Dependencies: System (Action); System.Collections.Generic; SimulationClock; Agent.
-// Events emitted: OnTick (each derived logical tick); OnDayChanged(int newDay) (rollover).
+// Dependencies: System (Action); System.Collections.Generic; SimulationClock; Agent;
+//               ResourceNode.
+// Events emitted: OnTick (each derived logical tick); OnDayChanged(int newDay).
 // Events consumed: none. Advanced externally by SimulationRunner in fixed steps.
 
 using System;
@@ -19,11 +19,10 @@ public class Simulation
 {
     public SimulationClock Clock { get; }
 
-    // Live agents, owned here as plain sim state. AgentManager spawns into this list.
-    public List<Agent> Agents { get; } = new List<Agent>();
+    public List<Agent>        Agents        { get; } = new List<Agent>();
+    public List<ResourceNode> ResourceNodes { get; } = new List<ResourceNode>();
 
-    // Game-seconds per logical tick = (seconds per day) / (ticks per day). The day/stat
-    // cadence; movement does not use this.
+    // Game-seconds per logical tick = secondsPerDay / ticksPerDay.
     public double SecondsPerTick { get; }
 
     public event Action OnTick;
@@ -44,9 +43,15 @@ public class Simulation
         return agent;
     }
 
+    public ResourceNode AddResourceNode(ResourceType type, int cellX, int cellZ, int amount)
+    {
+        var node = new ResourceNode(type, cellX, cellZ, amount);
+        ResourceNodes.Add(node);
+        return node;
+    }
+
     // Advances the sim by dt game-seconds. Movement is continuous (every step); logical
-    // ticks fire whenever SecondsPerTick of game-time has accumulated (so one large dt
-    // can emit several ticks).
+    // ticks fire whenever SecondsPerTick of game-time has accumulated.
     public void Advance(double dt)
     {
         // Continuous systems.

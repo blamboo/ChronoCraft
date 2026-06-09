@@ -1,10 +1,10 @@
 // Agent.cs
-// Version: 0.7 (added StoneCarried; AddResource/inventory now cover Wood/Food/Stone)
+// Version: 0.8 (added Civ identity for the two-civilization world)
 // Purpose: Plain-C# simulation agent (NPC). Continuous position, speed-based movement,
-//          resource inventory, and a hunger float drained each tick by AgentBehavior.
-//          Pure sim state; no MonoBehaviour, no rendering.
+//          civ identity, resource inventory, and a hunger float drained each tick by
+//          AgentBehavior. Pure sim state; no MonoBehaviour, no rendering.
 // Location: Assets/Scripts/World/Agent.cs
-// Dependencies: System.Collections.Generic; UnityEngine (Vector2Int/Mathf only).
+// Dependencies: System.Collections.Generic; UnityEngine (Vector2Int/Mathf only); CivId.
 // Events: none. Advanced by Simulation.Advance(dt) each fixed sim step.
 
 using System.Collections.Generic;
@@ -12,6 +12,9 @@ using UnityEngine;
 
 public class Agent
 {
+    // Which civilization this agent belongs to. Set by the spawner.
+    public CivId Civ = CivId.None;
+
     // Movement speed in cells per game-second. NOT tied to tick rate.
     public float Speed = 3f;
 

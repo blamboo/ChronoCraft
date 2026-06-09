@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.9)
+# TimeCraft — Architecture Document (v0.10)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -11,6 +11,12 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.10: multi-civ agents. CivId added; AgentManager now spawns agentsPerCiv
+agents for Civ1 and Civ2 at opposite edges, tinted by civ; the v1 hunger-drain default
+was retuned (10 -> 0.25/tick) for ticksPerDay 450. TRANSITIONAL (A3a): both civs still
+run the v1 brain against the single shared structure and shared resource nodes, so they
+clump at one structure; per-civ structures are A3b.
 
 Changes in v0.9: expanded the deferred movement note (natural routing / any-angle
 smoothing) — no code change this turn.
@@ -42,8 +48,9 @@ SimulationRunner. Two independent cadences:
 - Discrete: day/stat tick fires every SecondsPerTick = secondsPerDay / ticksPerDay.
   Hunger drains each tick; stats and day clock are tick-driven.
 `timeScale` (live) scales real→game time equally for both.
-Current runner default: secondsPerDay = 1200, ticksPerDay = 24. NOTE: GDD S13 targets
-1350 / 450; reconcile when per-tick stat rates are authored (Phase B / NeedsSystem).
+Runner set to secondsPerDay = 1350, ticksPerDay = 450 (GDD S13). Per-tick rates are
+authored against 450 ticks/day: hunger-drain default is 0.25/tick (AgentManager). Night
+begins at TickOfDay >= 225 once the schedule (Phase B) is wired.
 
 ## Advance order (per fixed step)
 
@@ -64,6 +71,7 @@ Assets/
       Agent.cs
       AgentManager.cs
     Simulation/
+      Civ.cs
       SimulationClock.cs
       Simulation.cs
       SimulationRunner.cs
@@ -90,10 +98,13 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
   context menu spawns a water plane at waterLevel (edit-mode + Play; Game-view visible).
 - Pathfinder.cs — Plain C# static. A* over GridData (4-connected, walkable only; water
   and hills are unwalkable so paths route around them). [Diagonal: see deferred-tech.]
-- Agent.cs — Plain C#. NPC: continuous position (PosX/PosZ), CellX/CellZ, Speed,
-  Hunger (per tick), inventory (Wood/Food/Stone Carried, CarryCapacity, InventoryFull).
-- AgentManager.cs — MonoBehaviour bridge. Spawns one Agent + AgentBehavior; syncs
-  capsule placeholder; exposes state/inventory/hunger to the Inspector.
+- Agent.cs — Plain C#. NPC: Civ (CivId), continuous position (PosX/PosZ), CellX/CellZ,
+  Speed, Hunger (per tick), inventory (Wood/Food/Stone Carried, CarryCapacity).
+- AgentManager.cs — MonoBehaviour bridge. Spawns agentsPerCiv agents for Civ1 and Civ2
+  at opposite edges (ring-out from each anchor), tints capsules by civ, attaches an
+  AgentBehavior (v1 brain) to each, and syncs all capsules each frame. A3a transitional:
+  shared structure + shared resources (clump expected); per-civ structures = A3b.
+- Civ.cs — Plain C#. CivId enum (None/Civ1/Civ2); civ identity carried by Agent.
 - SimulationClock.cs — Plain C#. Tick counter; derives Day and TickOfDay.
 - Simulation.cs — Plain C#. Sim root; owns Agents, ResourceNodes, StructureNodes,
   AgentBehaviors; Advance(dt) runs the advance order above.
@@ -121,8 +132,10 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 
 - Sim spine: SimulationRunner → Simulation.Advance(FixedStep). OnTick / OnDayChanged
   are the event bus; stat drains and future systems subscribe.
-- Agent lifecycle: AgentManager spawns Agent + AgentBehavior. Behavior owns all NPC
-  logic; AgentManager only mirrors position and state to Unity.
+- Agent lifecycle: AgentManager spawns 12 agents per civ (Civ1/Civ2), each with its own
+  AgentBehavior (v1 brain). Behavior owns all NPC logic; AgentManager mirrors positions.
+  Transitional: all agents target the single shared structure (sim.StructureNodes) and
+  shared resource nodes regardless of civ; civ-scoped structures arrive in A3b.
 - Resource loop: AgentBehavior.TrySeekResource → Pathfinder → agent.SetPath → arrive →
   harvestTimer → ResourceNode.Harvest → inventory → TryMoveToSite.
 - Build loop: TryMoveToSite → StructureNode.DepositWood → AdvanceBuild each step →

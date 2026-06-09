@@ -150,8 +150,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ResourceManager
   runner: {fileID: 1351721462}
   gridManager: {fileID: 847778606}
-  woodCount: 10
-  foodCount: 10
+  woodCount: 30
+  foodCount: 30
   stoneCount: 8
   amountPerNode: 5
   seed: 42
@@ -1019,16 +1019,17 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::AgentManager
   runner: {fileID: 1351721462}
   gridManager: {fileID: 847778606}
+  agentsPerCiv: 12
+  edgeMargin: 8
+  civ1Color: {r: 0.3, g: 0.55, b: 0.95, a: 1}
+  civ2Color: {r: 0.9019608, g: 0.25098047, b: 0.28455025, a: 1}
   agentSpeed: 3
   yOffset: 1
-  startCell: {x: 16, y: 16}
   harvestDurationSeconds: 10
   hungerDrainPerTick: 10
   hungerThreshold: 50
-  agentState: 
-  woodCarried: 0
-  foodCarried: 0
-  hunger: 0
+  civ1Agents: 0
+  civ2Agents: 0
 --- !u!4 &2126246152
 Transform:
   m_ObjectHideFlags: 0

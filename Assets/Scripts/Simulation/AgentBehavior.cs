@@ -1,10 +1,12 @@
 // AgentBehavior.cs
-// Version: 0.6 (initial -- full NPC lifecycle: wood → build → shelter → food loop)
+// Version: 0.7 (resource reservation: agents claim a node so only one gathers it at a time)
 // Purpose: Plain-C# state machine driving the prototype NPC through its full lifecycle:
-//          gather 3 wood → walk to build site → build shelter (20 s) → shelter inside →
-//          hunger drains each tick → leave to gather food → eat → return home → repeat.
-//          Replaces GathererBehavior (delete that file from your project).
+//          gather wood -> walk to build site -> build shelter -> shelter inside ->
+//          hunger drains each tick -> leave to gather food -> eat -> return home -> repeat.
 //          Pure sim-side; no MonoBehaviour, no rendering.
+//          v0.7: when seeking a resource the agent picks the nearest UNCLAIMED node,
+//          reserves it (ResourceNode.TryClaim), and releases it when it finishes or
+//          abandons it, so agents no longer clump on a single node.
 // Location: Assets/Scripts/Simulation/AgentBehavior.cs
 // Dependencies: System.Collections.Generic; UnityEngine (Vector2Int/Mathf only).
 //               Agent, Simulation, ResourceNode, StructureNode, GridData, Pathfinder.
@@ -29,7 +31,7 @@ public class AgentBehavior
     // Time the agent spends at a resource node per visit (game-seconds).
     public float HarvestDurationSeconds = 10f;
     // Hunger added each logical tick. Stat drain is tick-based per design.
-    public float HungerDrainPerTick = 10f;
+    public float HungerDrainPerTick = 0.25f;
     // Hunger level that triggers the feed phase.
     public float HungerThreshold = 50f;
 
@@ -52,7 +54,11 @@ public class AgentBehavior
         sim.OnTick += OnTick;
     }
 
-    public void Dispose() => sim.OnTick -= OnTick;
+    public void Dispose()
+    {
+        ReleaseNode();          // never leave a node reserved after teardown
+        sim.OnTick -= OnTick;
+    }
 
     // Called every fixed sim step by Simulation.Advance (after agent movement).
     public void Update(float dt)
@@ -78,14 +84,12 @@ public class AgentBehavior
                     int need  = agent.CarryCapacity - agent.WoodCarried;
                     int taken = currentNode != null ? currentNode.Harvest(need) : 0;
                     agent.AddResource(ResourceType.Wood, taken);
+                    ReleaseNode();                         // done with this node either way
 
                     if (agent.WoodCarried >= agent.CarryCapacity)
                         TryMoveToSite();
                     else
-                    {
-                        currentNode  = null;
-                        CurrentState = State.SeekWood; // need more wood from another node
-                    }
+                        CurrentState = State.SeekWood;     // need more wood from another node
                 }
                 break;
 
@@ -130,6 +134,7 @@ public class AgentBehavior
                 if (harvestTimer >= HarvestDurationSeconds)
                 {
                     if (currentNode != null) currentNode.Harvest(1);
+                    ReleaseNode();
                     agent.Hunger = 0f; // ate -- hunger reset
                     TryReturnHome();
                 }
@@ -152,12 +157,13 @@ public class AgentBehavior
 
     void TrySeekResource(ResourceType type, State moveState)
     {
-        var node = FindNearest(type);
-        if (node == null) return;
+        var node = FindNearestUnclaimed(type);
+        if (node == null) return;                 // none free -> wait and retry
         var path = Pathfinder.FindPath(grid,
             new Vector2Int(agent.CellX, agent.CellZ),
             new Vector2Int(node.CellX,  node.CellZ));
-        if (path == null) return;
+        if (path == null) return;                 // unreachable -> do not claim
+        node.TryClaim(agent);                     // reserve so no other agent takes it
         currentNode  = node;
         agent.SetPath(path);
         CurrentState = moveState;
@@ -194,18 +200,25 @@ public class AgentBehavior
         CurrentState = State.ReturnHome;
     }
 
-    ResourceNode FindNearest(ResourceType type)
+    // Nearest non-depleted node of 'type' that is not reserved by another agent.
+    ResourceNode FindNearestUnclaimed(ResourceType type)
     {
         ResourceNode best   = null;
         float        bestSq = float.MaxValue;
         foreach (var node in sim.ResourceNodes)
         {
             if (node.Type != type || node.Depleted) continue;
+            if (node.IsClaimed && node.ClaimedBy != agent) continue; // taken by someone else
             float dx = node.CellX - agent.CellX;
             float dz = node.CellZ - agent.CellZ;
             float sq = dx * dx + dz * dz;
             if (sq < bestSq) { bestSq = sq; best = node; }
         }
         return best;
+    }
+
+    void ReleaseNode()
+    {
+        if (currentNode != null) { currentNode.Release(agent); currentNode = null; }
     }
 }

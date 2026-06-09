@@ -1,11 +1,11 @@
 // ResourceNode.cs
-// Version: 0.5 (added Stone to ResourceType for the Miner / ore slice)
+// Version: 0.6 (added single-agent reservation: ClaimedBy / TryClaim / Release)
 // Purpose: Plain-C# resource node for the TimeCraft prototype. Stores a node's type,
-//          cell position, and remaining stock. Passive sim data -- no ticking, no
-//          rendering. Agents harvest from it; stock decreases until depleted.
-//          No MonoBehaviour, no UnityEngine.
+//          cell position, remaining stock, and a single-agent reservation so that at
+//          most one agent gathers from a node at a time (prevents clumping). Passive sim
+//          data -- no ticking, no rendering. No MonoBehaviour, no UnityEngine.
 // Location: Assets/Scripts/Simulation/ResourceNode.cs
-// Dependencies: System only.
+// Dependencies: System; references Agent (plain C#) for the reservation holder.
 // Events: none.
 
 public enum ResourceType { Wood, Food, Stone }
@@ -18,12 +18,30 @@ public class ResourceNode
     public int Amount         { get; private set; }
     public bool Depleted      => Amount <= 0;
 
+    // Reservation: one agent at a time. Null = free. AgentBehavior claims a node when it
+    // targets it and releases it when it finishes or abandons it.
+    public Agent ClaimedBy    { get; private set; }
+    public bool IsClaimed     => ClaimedBy != null;
+
     public ResourceNode(ResourceType type, int cellX, int cellZ, int amount)
     {
         Type   = type;
         CellX  = cellX;
         CellZ  = cellZ;
         Amount = amount;
+    }
+
+    // Claims the node for agent 'a'. Succeeds if free or already held by 'a'.
+    public bool TryClaim(Agent a)
+    {
+        if (ClaimedBy == null || ClaimedBy == a) { ClaimedBy = a; return true; }
+        return false;
+    }
+
+    // Releases the claim only if 'a' currently holds it (safe to call unconditionally).
+    public void Release(Agent a)
+    {
+        if (ClaimedBy == a) ClaimedBy = null;
     }
 
     // Harvest up to 'request' units. Returns the actual amount taken.

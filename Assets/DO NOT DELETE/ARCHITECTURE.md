@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.10)
+# TimeCraft — Architecture Document (v0.11)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -11,6 +11,10 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.11: resource reservation. ResourceNode gains ClaimedBy / TryClaim /
+Release; AgentBehavior targets the nearest UNCLAIMED node, reserves it, and releases it
+when done, so only one agent gathers a node at a time (no resource clumping).
 
 Changes in v0.10: multi-civ agents. CivId added; AgentManager now spawns agentsPerCiv
 agents for Civ1 and Civ2 at opposite edges, tinted by civ; the v1 hunger-drain default
@@ -111,7 +115,7 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - SimulationRunner.cs — MonoBehaviour bridge. Fixed-step loop; secondsPerDay +
   ticksPerDay (Play start); timeScale (live); exposes Sim.
 - ResourceNode.cs — Plain C#. Passive sim data: Type (Wood/Food/Stone), cell, Amount,
-  Depleted, Harvest().
+  Depleted, Harvest(); single-agent reservation (ClaimedBy, TryClaim, Release).
 - ResourceManager.cs — MonoBehaviour bridge. Seed-based scatter: Wood/Food on walkable
   cells (marked occupied), Stone on reachable unwalkable hill cells; placeholder
   primitives (brown cube=wood, green sphere=food, grey cube=stone).
@@ -136,8 +140,9 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
   AgentBehavior (v1 brain). Behavior owns all NPC logic; AgentManager mirrors positions.
   Transitional: all agents target the single shared structure (sim.StructureNodes) and
   shared resource nodes regardless of civ; civ-scoped structures arrive in A3b.
-- Resource loop: AgentBehavior.TrySeekResource → Pathfinder → agent.SetPath → arrive →
-  harvestTimer → ResourceNode.Harvest → inventory → TryMoveToSite.
+- Resource loop: AgentBehavior.TrySeekResource picks the nearest UNCLAIMED node →
+  ResourceNode.TryClaim → Pathfinder → agent.SetPath → arrive → harvestTimer →
+  ResourceNode.Harvest → ReleaseNode → inventory → TryMoveToSite. One agent per node.
 - Build loop: TryMoveToSite → StructureNode.DepositWood → AdvanceBuild each step →
   IsBuilt → InHome. StructureManager reads BuildProgress each frame for visuals.
 - Hunger loop: OnTick → agent.Hunger += drain → InHome check → SeekFood → HarvestFood

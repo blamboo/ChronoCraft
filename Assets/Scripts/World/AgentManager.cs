@@ -1,88 +1,75 @@
 // AgentManager.cs
-// Version: 0.3 (per-agent speed; continuous smooth view sync)
-// Purpose: Unity bridge for prototype agents. Spawns sim-side Agents into the running
-//          Simulation, spawns one placeholder primitive per agent, and each frame snaps
-//          it to the agent's CONTINUOUS position (sim -> render sync; smooth, no
-//          teleport). Holds no sim logic -- the Agent walks itself; this only mirrors
-//          position. Same adapter role GridManager plays for GridData.
+// Version: 0.5 (patrol replaced by GathererBehavior; added inventory read-outs)
+// Purpose: Unity bridge for prototype agents. Spawns one Agent, attaches a
+//          GathererBehavior to drive it, and each frame snaps the placeholder capsule
+//          to the agent's continuous position and mirrors state/inventory to the
+//          Inspector for live observation. No sim logic lives here.
 // Location: Assets/Scripts/Simulation/AgentManager.cs
-// Dependencies: UnityEngine; SimulationRunner (Simulation), GridManager (GridData +
-//               terrain transform), Agent, Pathfinder.
-// Events emitted: none. Events consumed: none (reads SimulationRunner.Sim each frame).
-// Notes: The start<->target patrol is TEMPORARY test scaffolding to make movement
-//        visible; it will be replaced by the job/behaviour system. Single agent for now;
-//        a per-agent AgentView component is the scalable path once there are many.
+// Dependencies: UnityEngine; SimulationRunner, GridManager, Agent, GathererBehavior.
+// Events: none.
 
 using UnityEngine;
 
 public class AgentManager : MonoBehaviour
 {
     [Header("Scene references")]
-    [Tooltip("Drives the Simulation. Drag the Simulation GameObject here.")]
+    [Tooltip("Drag the Simulation GameObject here.")]
     [SerializeField] private SimulationRunner runner;
-    [Tooltip("Owns the GridData + terrain transform. Drag the ProceduralTerrain object here.")]
+    [Tooltip("Drag the ProceduralTerrain GameObject here.")]
     [SerializeField] private GridManager gridManager;
 
     [Header("Agent")]
-    [Tooltip("NPC movement speed in cells per game-second. Independent of the tick/day rate.")]
+    [Tooltip("NPC movement speed in cells per game-second. Independent of tick rate.")]
     [Range(0.25f, 20f)]
     [SerializeField] private float agentSpeed = 3f;
-    [Tooltip("Vertical offset so the capsule sits on the surface rather than through it.")]
+    [Tooltip("Vertical offset so the capsule sits on the surface.")]
     [SerializeField] private float yOffset = 1f;
-
-    [Header("Test patrol (temporary scaffolding)")]
-    [Tooltip("Approximate start cell (snapped to the nearest walkable cell).")]
+    [Tooltip("Spawn cell (snapped to nearest walkable).")]
     [SerializeField] private Vector2Int startCell = new Vector2Int(16, 16);
-    [Tooltip("Approximate patrol target cell (snapped to the nearest walkable cell).")]
-    [SerializeField] private Vector2Int targetCell = new Vector2Int(48, 48);
+    [Tooltip("Which resource type this agent gathers.")]
+    [SerializeField] private ResourceType targetResourceType = ResourceType.Wood;
 
-    private Agent agent;
-    private Transform view;
-    private Vector2Int patrolA, patrolB;
-    private bool headingToB = true;
-    private bool initialized;
+    [Header("Read-out (Play mode -- editing has no effect)")]
+    [SerializeField] private string agentState;
+    [SerializeField] private int    woodCarried;
+    [SerializeField] private int    foodCarried;
+
+    private Agent            agent;
+    private GathererBehavior behavior;
+    private Transform        view;
+    private bool             initialized;
 
     void Update()
     {
-        if (!initialized)
-        {
-            TryInitialize();
-            if (!initialized) return;
-        }
+        if (!initialized) { TryInitialize(); if (!initialized) return; }
 
-        // TEMPORARY: on arrival, send the agent to the other patrol point. Replaced later
-        // by job-driven targets.
-        if (!agent.HasPath)
+        // Mirror sim state to the Inspector for live observation.
+        if (behavior != null)
         {
-            Vector2Int goal = headingToB ? patrolB : patrolA;
-            var path = Pathfinder.FindPath(gridManager.Grid, new Vector2Int(agent.CellX, agent.CellZ), goal);
-            if (path != null) agent.SetPath(path);
-            headingToB = !headingToB;
+            agentState  = behavior.CurrentState.ToString();
+            woodCarried = agent.WoodCarried;
+            foodCarried = agent.FoodCarried;
         }
 
         SyncView();
     }
 
-    // Lazy init: runs once both the grid (GridManager.Start) and the sim
-    // (SimulationRunner.Awake) exist, so it is safe against scene start-order.
     void TryInitialize()
     {
         if (runner == null || gridManager == null) return;
-
-        GridData grid = gridManager.Grid;
-        Simulation sim = runner.Sim;
+        GridData   grid = gridManager.Grid;
+        Simulation sim  = runner.Sim;
         if (grid == null || sim == null) return;
 
-        patrolA = NearestWalkable(grid, startCell);
-        patrolB = NearestWalkable(grid, targetCell);
+        Vector2Int spawnCell = NearestWalkable(grid, startCell);
+        agent           = sim.AddAgent(spawnCell.x, spawnCell.y);
+        agent.Speed     = agentSpeed;
+        behavior        = sim.AddGathererBehavior(agent, grid, targetResourceType);
 
-        agent = sim.AddAgent(patrolA.x, patrolA.y);
-        agent.Speed = agentSpeed;
-
-        view = GameObject.CreatePrimitive(PrimitiveType.Capsule).transform;
+        view      = GameObject.CreatePrimitive(PrimitiveType.Capsule).transform;
         view.name = "Agent (placeholder)";
         view.SetParent(gridManager.transform, worldPositionStays: false);
-        Destroy(view.GetComponent<Collider>()); // not needed in the prototype
+        Destroy(view.GetComponent<Collider>());
 
         initialized = true;
         SyncView();
@@ -96,28 +83,27 @@ public class AgentManager : MonoBehaviour
         view.position = world + Vector3.up * yOffset;
     }
 
-    // Returns the requested cell if walkable, else the nearest walkable cell found by an
-    // outward ring search. Falls back to the clamped cell if none is walkable.
     Vector2Int NearestWalkable(GridData grid, Vector2Int c)
     {
-        c.x = Mathf.Clamp(c.x, 0, grid.Width - 1);
-        c.y = Mathf.Clamp(c.y, 0, grid.Depth - 1);
+        c.x = Mathf.Clamp(c.x, 0, grid.Width  - 1);
+        c.y = Mathf.Clamp(c.y, 0, grid.Depth  - 1);
         if (grid.Cells[c.x, c.y].Walkable) return c;
 
         int maxR = Mathf.Max(grid.Width, grid.Depth);
         for (int r = 1; r <= maxR; r++)
+        for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++)
         {
-            for (int dz = -r; dz <= r; dz++)
-            {
-                for (int dx = -r; dx <= r; dx++)
-                {
-                    if (Mathf.Abs(dx) != r && Mathf.Abs(dz) != r) continue; // ring only
-                    int x = c.x + dx, z = c.y + dz;
-                    if (grid.InBounds(x, z) && grid.Cells[x, z].Walkable)
-                        return new Vector2Int(x, z);
-                }
-            }
+            if (Mathf.Abs(dx) != r && Mathf.Abs(dz) != r) continue;
+            int x = c.x + dx, z = c.y + dz;
+            if (grid.InBounds(x, z) && grid.Cells[x, z].Walkable)
+                return new Vector2Int(x, z);
         }
         return c;
+    }
+
+    void OnDestroy()
+    {
+        behavior?.Dispose();
     }
 }

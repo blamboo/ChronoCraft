@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.4)
+# TimeCraft — Architecture Document (v0.5)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -21,6 +21,12 @@ SimulationRunner. Two independent cadences:
 `timeScale` (live) scales real→game time equally for both. Default: secondsPerDay = 1200
 (20 real minutes) at timeScale 1.
 
+## Advance order (per fixed step)
+
+1. Agent.Advance(dt)          — continuous movement
+2. GathererBehavior.Update(dt) — state-machine transitions (arrival, seek throttle)
+3. Tick cadence                — OnTick fires (harvesting, future stat drains)
+
 ## File / folder tree
 
 ```
@@ -39,56 +45,52 @@ Assets/
       AgentManager.cs
       ResourceNode.cs
       ResourceManager.cs
+      GathererBehavior.cs
 ```
 
 ## Script responsibilities (one line each)
 
-- TerrainGenerator.cs — MonoBehaviour. Procedural heightfield (layered Perlin noise) +
-  display mesh; exposes `HeightAt(x,z)` — the single place the height transform lives.
-- GridData.cs — Plain C# (GridCell struct + GridData class). One cell per quad: height,
-  walkability, occupancy; cell<->local mapping; `ContinuousToLocal` for smooth movement;
-  `SetOccupied` for clean struct mutation.
-- GridManager.cs — MonoBehaviour adapter. Builds GridData from terrain heights, owns it
-  (`Grid`), draws editor-only gizmo overlay.
-- Pathfinder.cs — Plain C# static utility. A* over GridData (4-connected, walkable cells
-  only). Stateless.
-- SimulationClock.cs — Plain C#. Tick counter; derives `Day` and `TickOfDay`.
-- Simulation.cs — Plain C#. Sim root; owns `Agents` and `ResourceNodes`; `Advance(dt)`
-  moves agents continuously and fires OnTick/OnDayChanged on the derived cadence.
-- SimulationRunner.cs — MonoBehaviour bridge. Fixed-step loop; `secondsPerDay` +
-  `ticksPerDay` (Play start); `timeScale` (live); `running` pause; exposes `Sim`.
-- Agent.cs — Plain C#. NPC: continuous cell-space position (`PosX`/`PosZ`), rounded
-  `CellX`/`CellZ`, `Speed` (cells/sec), path walked via `Advance(dt)`.
-- AgentManager.cs — MonoBehaviour bridge. Spawns one Agent, sets its Speed, syncs a
-  placeholder capsule to the agent's continuous position each frame. Temporary patrol
-  scaffolding until the job system replaces it.
-- ResourceNode.cs — Plain C#. Passive sim data: `Type` (Wood/Food), cell position,
-  `Amount`, `Depleted` flag, `Harvest(int)`. No ticking; no rendering.
-- ResourceManager.cs — MonoBehaviour bridge. Scatters seed-based ResourceNodes onto
-  walkable, unoccupied cells; marks those cells occupied; spawns placeholder primitives
-  (brown cubes = wood, green spheres = food). No sim logic.
+- TerrainGenerator.cs — MonoBehaviour. Procedural heightfield + display mesh; single
+  source of truth for terrain height via HeightAt(x,z).
+- GridData.cs — Plain C#. One GridCell per quad: height, walkability, occupancy;
+  CellToLocal, ContinuousToLocal, SetOccupied.
+- GridManager.cs — MonoBehaviour adapter. Builds and owns GridData; editor gizmo overlay.
+- Pathfinder.cs — Plain C# static. A* over GridData (4-connected, walkable only).
+- SimulationClock.cs — Plain C#. Tick counter; derives Day and TickOfDay.
+- Simulation.cs — Plain C#. Sim root; owns Agents, ResourceNodes, GathererBehaviors;
+  Advance(dt) runs the advance order above.
+- SimulationRunner.cs — MonoBehaviour bridge. Fixed-step loop; secondsPerDay + ticksPerDay
+  (Play start); timeScale (live); exposes Sim.
+- Agent.cs — Plain C#. NPC: continuous position (PosX/PosZ), CellX/CellZ, Speed, path
+  walking (Advance), and inventory (WoodCarried, FoodCarried, CarryCapacity).
+- AgentManager.cs — MonoBehaviour bridge. Spawns one Agent + GathererBehavior, syncs
+  placeholder capsule to continuous position, mirrors state/inventory to Inspector.
+- ResourceNode.cs — Plain C#. Passive sim data: Type, cell, Amount, Depleted, Harvest().
+- ResourceManager.cs — MonoBehaviour bridge. Seed-based scatter of ResourceNodes on
+  walkable cells; marks cells occupied; spawns placeholder primitives.
+- GathererBehavior.cs — Plain C#. Three-state FSM (Seeking → Moving → Harvesting).
+  Finds nearest reachable target node (throttled to 2×/sec), paths the agent to it,
+  harvests UnitsPerTick per OnTick, clears inventory on full (temporary drop-off stub).
 
 ## Interaction map
 
-- GridManager reads TerrainGenerator.HeightAt() to build GridData. Grid is rebuilt
-  manually (TerrainGenerator → Generate, then GridManager → Build Grid).
-- Simulation spine: SimulationRunner → Simulation.Advance(FixedStep) per frame.
-  Simulation owns SimulationClock + Agents + ResourceNodes. OnTick / OnDayChanged are
-  the event bus; future stat systems subscribe instead of running their own Update loops.
-- Agent navigation: AgentManager reads GridManager.Grid + SimulationRunner.Sim (lazy
-  init, start-order safe). Movement mirrors Agent.PosX/PosZ via ContinuousToLocal.
-- Resource placement: ResourceManager reads GridManager.Grid + SimulationRunner.Sim
-  (same lazy-init pattern). Calls Simulation.AddResourceNode and GridData.SetOccupied.
-  Pathfinder still only checks Walkable, not Occupied, so agents can path through
-  resource cells (and will harvest on arrival in the next slice).
-- Next slice: gathering behaviour — agent detects nearest needed ResourceNode, paths to
-  its cell, harvests over ticks (OnTick), carries stock toward a build site.
+- GridManager reads TerrainGenerator.HeightAt() to build GridData.
+- Simulation spine: SimulationRunner → Simulation.Advance(FixedStep). OnTick / OnDayChanged
+  are the event bus for discrete systems.
+- Gather loop: AgentManager spawns Agent → Simulation.AddGathererBehavior(agent, grid).
+  GathererBehavior.TrySeek queries sim.ResourceNodes, calls Pathfinder.FindPath, sets
+  agent path. OnTick drives harvesting. On inventory-full, GathererBehavior clears
+  inventory (temporary stub) and seeks again.
+- ResourceManager calls Simulation.AddResourceNode + GridData.SetOccupied. Pathfinder
+  checks Walkable only, so agents can path to occupied resource cells.
+- Next slice (construction): GathererBehavior gets a Returning state; agent walks to a
+  build site and deposits wood. StructureNode (plain C#) tracks build progress; a
+  Builder system advances it per tick until complete.
 
 ## Scene wiring
 
-- "ProceduralTerrain": TerrainGenerator + MeshFilter + MeshRenderer (TerrainMat) +
-  GridManager.
-- Main Camera: orthographic, top-down (0,60,0), rotation (90,0,0).
-- "Simulation" (empty): SimulationRunner.
-- "Agents" (empty): AgentManager → runner=Simulation, gridManager=ProceduralTerrain.
-- "Resources" (empty): ResourceManager → runner=Simulation, gridManager=ProceduralTerrain.
+- "ProceduralTerrain": TerrainGenerator + MeshFilter + MeshRenderer + GridManager.
+- Main Camera: orthographic top-down (0,60,0), rotation (90,0,0).
+- "Simulation": SimulationRunner.
+- "Agents": AgentManager → runner=Simulation, gridManager=ProceduralTerrain.
+- "Resources": ResourceManager → runner=Simulation, gridManager=ProceduralTerrain.

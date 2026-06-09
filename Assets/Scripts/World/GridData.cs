@@ -1,4 +1,5 @@
 // GridData.cs
+// Version: 0.3 (added ContinuousToLocal for smooth agent movement)
 // Purpose: Plain-C# logical grid for the TimeCraft prototype. Holds one cell per
 //          terrain quad (height, walkability, occupancy) plus the cell<->local
 //          mapping. This is simulation/spatial data, deliberately decoupled from
@@ -76,6 +77,18 @@ public class GridData
     {
         float h = InBounds(x, z) ? Cells[x, z].Height : 0f;
         return new Vector3((x + 0.5f) * CellSize - OffsetX, h, (z + 0.5f) * CellSize - OffsetZ);
+    }
+
+    // Local-space position for a CONTINUOUS grid coordinate (gx, gz in cell units), used
+    // by smooth agent movement. Horizontal interpolates with the coordinate; height uses
+    // the cell the point sits in (bilinear height smoothing deferred -- negligible on the
+    // low-slope walkable cells agents traverse).
+    public Vector3 ContinuousToLocal(float gx, float gz)
+    {
+        int cx = Mathf.Clamp(Mathf.RoundToInt(gx), 0, Width - 1);
+        int cz = Mathf.Clamp(Mathf.RoundToInt(gz), 0, Depth - 1);
+        float h = Cells[cx, cz].Height;
+        return new Vector3((gx + 0.5f) * CellSize - OffsetX, h, (gz + 0.5f) * CellSize - OffsetZ);
     }
 
     // Local-space position -> the cell that contains it (may be out of bounds; check InBounds).

@@ -1,33 +1,42 @@
 // SimulationRunner.cs
+// Version: 0.3 (fixed-step game-time loop; day length in seconds + live time scale)
 // Purpose: The single MonoBehaviour bridge between Unity's frame loop and the plain-C#
-//          Simulation, for the TimeCraft prototype. Owns one Simulation, converts real
-//          time into whole logical ticks via an accumulator (fixed logical step,
-//          independent of frame rate -- required for determinism and the future
-//          time-rewind path), and exposes inspector controls (day speed, ticks/day,
-//          pause) plus live read-outs. Contains NO simulation logic; it only paces
-//          Simulation.Tick(). Other systems reach the sim through the Sim property to
-//          subscribe to its tick events.
+//          Simulation. Converts real time into a continuous game-time stream advanced in
+//          FIXED steps (frame-rate independent -- required for determinism and the future
+//          time-rewind path), and exposes inspector controls (day length, global time
+//          scale, pause) plus live read-outs. Contains NO simulation logic; it only paces
+//          Simulation.Advance(). Other systems reach the sim through the Sim property.
 // Location: Assets/Scripts/Simulation/SimulationRunner.cs
 // Dependencies: UnityEngine; Simulation + SimulationClock (plain C#).
-// Events emitted: none. Events consumed: Simulation.OnDayChanged (for a console log).
+// Events emitted: none. Events consumed: Simulation.OnDayChanged (console log).
 
 using UnityEngine;
 
 public class SimulationRunner : MonoBehaviour
 {
-    [Header("Clock setup (applied when Play starts)")]
-    [Tooltip("Logical ticks in one in-game day. One tick is the smallest sim step. " +
-             "Read at Awake, so changes take effect on the next Play, not live -- this " +
-             "avoids the day number jumping mid-run.")]
+    // Fixed game-time step. Const so sim resolution / reproducibility cannot drift via
+    // the inspector. 1/60 s gives smooth movement; raising it costs accuracy, lowering
+    // it costs CPU. Do not change at runtime.
+    private const double FixedStep = 1.0 / 60.0;
+    private const int MaxStepsPerFrame = 300; // guards against a spiral of death
+
+    [Header("Day length (applied when Play starts)")]
+    [Tooltip("Real seconds in one in-game day at Time Scale 1. Default 1200 = 20 minutes. " +
+             "Read at Awake, so changes take effect on the next Play.")]
+    [Range(10f, 3600f)]
+    [SerializeField] private float secondsPerDay = 1200f;
+
+    [Tooltip("Logical day/stat ticks in one in-game day. Hunger and other over-time stats " +
+             "drain on these ticks. Read at Awake; effective on the next Play.")]
     [Range(1, 96)]
     [SerializeField] private int ticksPerDay = 24;
 
-    [Header("Day speed (drag live in Play mode)")]
-    [Tooltip("Logical ticks advanced per real second. A day lasts ticksPerDay / " +
-             "ticksPerSecond seconds. Changing this only changes the rate, never the " +
-             "sim's results.")]
-    [Range(0.25f, 20f)]
-    [SerializeField] private float ticksPerSecond = 4f;
+    [Header("Time scale (drag live in Play mode)")]
+    [Tooltip("Global multiplier on game-time. 1 = real time. Speeds the WHOLE sim equally " +
+             "(day clock and NPC movement together). NPC base speed is set per-agent on " +
+             "AgentManager and is independent of this.")]
+    [Range(0.1f, 20f)]
+    [SerializeField] private float timeScale = 1f;
 
     [Tooltip("Uncheck to pause the simulation; re-check to resume.")]
     [SerializeField] private bool running = true;
@@ -37,7 +46,7 @@ public class SimulationRunner : MonoBehaviour
     [SerializeField] private int currentTickOfDay;
 
     // The live simulation. Other systems read this (read-only) to subscribe to OnTick /
-    // OnDayChanged, mirroring the GridManager.Grid ownership pattern. Null until Awake.
+    // OnDayChanged or to spawn agents. Null until Awake.
     public Simulation Sim => sim;
 
     private Simulation sim;
@@ -45,7 +54,7 @@ public class SimulationRunner : MonoBehaviour
 
     void Awake()
     {
-        sim = new Simulation(ticksPerDay);
+        sim = new Simulation(ticksPerDay, secondsPerDay);
         sim.OnDayChanged += HandleDayChanged;
         currentDay = sim.Clock.Day;
         currentTickOfDay = sim.Clock.TickOfDay;
@@ -56,32 +65,33 @@ public class SimulationRunner : MonoBehaviour
         if (sim == null || !running)
             return;
 
-        // Time.deltaTime is clamped by Time.maximumDeltaTime (default 0.333s), so a
-        // frame hitch cannot make this loop run away at the current speed range. If
-        // ticksPerSecond's max is ever raised far higher, add a per-frame tick cap
-        // here. Flagged as the scalable guard, not needed now.
-        accumulator += Time.deltaTime * ticksPerSecond;
+        // Real frame time -> game time, then drain in fixed steps so the sim advances
+        // deterministically regardless of frame rate. Time.deltaTime is clamped by
+        // Time.maximumDeltaTime, and MaxStepsPerFrame caps catch-up after a hitch.
+        accumulator += Time.deltaTime * timeScale;
 
-        // Run only whole ticks; carry the fractional remainder into the next frame so
-        // the sim advances at a fixed logical step regardless of frame rate.
-        while (accumulator >= 1.0)
+        int steps = 0;
+        while (accumulator >= FixedStep && steps < MaxStepsPerFrame)
         {
-            sim.Tick();
-            accumulator -= 1.0;
+            sim.Advance(FixedStep);
+            accumulator -= FixedStep;
+            steps++;
         }
+        if (steps == MaxStepsPerFrame)
+            accumulator = 0.0; // dropped the backlog; better than freezing
 
         currentDay = sim.Clock.Day;
         currentTickOfDay = sim.Clock.TickOfDay;
     }
 
-    // Advance exactly one logical tick. Useful for stepping through behaviour while
-    // paused. Play-mode only (sim is constructed in Awake); does nothing in edit mode.
-    [ContextMenu("Step One Tick")]
-    public void StepOneTick()
+    // Advance one game-second while paused, for stepping through movement/behaviour.
+    // Play-mode only (sim is constructed in Awake).
+    [ContextMenu("Step One Second")]
+    public void StepOneSecond()
     {
         if (sim == null)
             return;
-        sim.Tick();
+        sim.Advance(1.0);
         currentDay = sim.Clock.Day;
         currentTickOfDay = sim.Clock.TickOfDay;
     }

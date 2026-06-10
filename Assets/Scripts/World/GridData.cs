@@ -1,5 +1,5 @@
 // GridData.cs
-// Version: 0.7 (added TryFindNearestDrinkPoint for the Thirst need)
+// Version: 0.8 (added Owner field + SetOwner for territory system)
 // Purpose: Plain-C# logical grid for the TimeCraft prototype. Holds one cell per
 //          terrain quad (height, walkability, occupancy, water) plus the cell<->local
 //          mapping. Deliberately decoupled from MonoBehaviours and rendering per the
@@ -21,6 +21,7 @@ public struct GridCell
     public bool Walkable;  // false if too steep, or water
     public bool Occupied;  // true when a building or resource node claims the cell
     public bool IsWater;   // true when the cell centre is at/below waterLevel
+    public CivId Owner;    // None / Civ1 / Civ2 — territory ownership
 }
 
 public class GridData
@@ -71,7 +72,8 @@ public class GridData
                     Height   = avg,
                     Walkable = !isWater && (max - min) <= maxStepHeight,
                     Occupied = false,
-                    IsWater  = isWater
+                    IsWater  = isWater,
+                    Owner    = CivId.None
                 };
             }
         }
@@ -86,6 +88,15 @@ public class GridData
         var cell     = Cells[x, z];
         cell.Occupied = occupied;
         Cells[x, z]  = cell;
+    }
+
+    // Sets the territory Owner of a cell.
+    public void SetOwner(int x, int z, CivId owner)
+    {
+        if (!InBounds(x, z)) return;
+        var cell    = Cells[x, z];
+        cell.Owner  = owner;
+        Cells[x, z] = cell;
     }
 
     // True if (x,z) is a valid drink point: walkable and 4-adjacent to a water cell.

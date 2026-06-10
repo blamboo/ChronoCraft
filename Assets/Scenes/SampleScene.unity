@@ -434,6 +434,61 @@ MonoBehaviour:
   m_ShadowLayerMask: 1
   m_RenderingLayers: 1
   m_ShadowRenderingLayers: 1
+--- !u!1 &698258377
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 698258379}
+  - component: {fileID: 698258378}
+  m_Layer: 0
+  m_Name: Territory
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &698258378
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 698258377}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 05114f66bc8b377d890858fec255240e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TerritoryManager
+  _runner: {fileID: 1351721462}
+  _gridManager: {fileID: 847778606}
+  _civTerritoryRadius: 24
+  _townTerritoryRadius: 12
+  _overlayMode: 1
+  _civ1Color: {r: 0.2, g: 0.4, b: 1, a: 0.35}
+  _civ2Color: {r: 0.7830189, g: 0.22530258, b: 0.27695847, a: 0.35}
+  _neutralColor: {r: 0.5, g: 0.5, b: 0.5, a: 0.15}
+  _walkableColor: {r: 0, g: 1, b: 0, a: 0.25}
+  _unwalkableColor: {r: 1, g: 0, b: 0, a: 0.25}
+  _waterColor: {r: 0, g: 0.5, b: 1, a: 0.35}
+--- !u!4 &698258379
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 698258377}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 36.03777, y: -0, z: 53.4374}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
@@ -1066,3 +1121,4 @@ SceneRoots:
   - {fileID: 2126246152}
   - {fileID: 137620821}
   - {fileID: 1877883184}
+  - {fileID: 698258379}

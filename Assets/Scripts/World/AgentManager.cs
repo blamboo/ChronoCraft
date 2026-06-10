@@ -1,6 +1,6 @@
 // AgentManager.cs
-// Version: 0.8 (registers each civ's spawn anchor in the sim so StructureManager can
-//               place one structure per civ; v0.7 multi-civ spawn + hunger retune)
+// Version: 0.9 (attaches an AgentView debug component to each capsule so per-agent
+//               state is visible in the Inspector; v0.8 registers civ anchors)
 // Purpose: Unity bridge that bootstraps the two-civ population. Spawns agentsPerCiv
 //          agents for Civ1 and Civ2 at opposite map edges, tints each civ's placeholder
 //          capsules, attaches an AgentBehavior to each (the v1 brain), and each frame
@@ -128,6 +128,9 @@ public class AgentManager : MonoBehaviour
         var mpb = new MaterialPropertyBlock();
         mpb.SetColor("_BaseColor", color);
         go.GetComponent<Renderer>().SetPropertyBlock(mpb);
+
+        // Live per-agent read-out: select the capsule to see its state in the Inspector.
+        go.AddComponent<AgentView>().Bind(agent, b);
 
         views.Add(new View { Agent = agent, Tf = go.transform });
     }

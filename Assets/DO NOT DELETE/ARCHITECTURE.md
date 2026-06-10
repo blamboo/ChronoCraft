@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.12)
+# TimeCraft — Architecture Document (v0.13)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -11,6 +11,11 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.13: per-agent debug read-out (Phase B, B1). AgentView mirrors each
+agent's live state (civ, current action, hunger, inventory, cell) into the Inspector;
+AgentManager attaches and binds one to each capsule at spawn. Instrument only -- no
+behavior change. Next: B2 = NeedsSystem + DecisionSystem (continuous need-driven brain).
 
 Changes in v0.12: per-civ structures (A3b complete). StructureNode carries a CivId;
 Simulation gains a civ registry (Civs / RegisterCiv) seeded by AgentManager with each
@@ -80,6 +85,7 @@ Assets/
       Pathfinder.cs
       Agent.cs
       AgentManager.cs
+      AgentView.cs
     Simulation/
       Civ.cs
       SimulationClock.cs
@@ -112,7 +118,10 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
   Speed, Hunger (per tick), inventory (Wood/Food/Stone Carried, CarryCapacity).
 - AgentManager.cs — MonoBehaviour bridge. Registers each civ's spawn anchor in the sim,
   spawns agentsPerCiv agents for Civ1 and Civ2 at opposite edges (ring-out from each
-  anchor), tints capsules by civ, attaches an AgentBehavior to each, syncs all capsules.
+  anchor), tints capsules by civ, attaches an AgentBehavior + an AgentView to each, syncs
+  all capsules.
+- AgentView.cs — MonoBehaviour, debug instrument. Attached per capsule; mirrors its
+  agent's live state (civ, action, hunger, inventory, cell) into the Inspector. Read-only.
 - Civ.cs — Plain C#. CivId enum (None/Civ1/Civ2) + CivState (per-civ record with spawn
   anchor). Civ identity carried by Agent and StructureNode.
 - SimulationClock.cs — Plain C#. Tick counter; derives Day and TickOfDay.

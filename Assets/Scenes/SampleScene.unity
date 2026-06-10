@@ -791,10 +791,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::StructureManager
   runner: {fileID: 1351721462}
   gridManager: {fileID: 847778606}
-  buildSiteCell: {x: 32, y: 32}
   woodRequired: 3
   buildDurationSeconds: 20
-  buildProgress: 0
+  spacing: 3
 --- !u!4 &1877883184
 Transform:
   m_ObjectHideFlags: 0
@@ -1025,11 +1024,21 @@ MonoBehaviour:
   civ2Color: {r: 0.9019608, g: 0.25098047, b: 0.28455025, a: 1}
   agentSpeed: 3
   yOffset: 1
+  hungerDrainPerTick: 0.12
+  thirstDrainPerTick: 0.28
+  hungerThreshold: 55
+  thirstThreshold: 45
+  staminaDrainPerTick: 0.35
+  staminaRecoverPerTick: 0.35
+  staminaRestThreshold: 25
+  staminaWakeThreshold: 90
   harvestDurationSeconds: 10
-  hungerDrainPerTick: 10
-  hungerThreshold: 50
+  drinkDurationSeconds: 5
+  eatDurationSeconds: 12
   civ1Agents: 0
   civ2Agents: 0
+  day: 0
+  night: 0
 --- !u!4 &2126246152
 Transform:
   m_ObjectHideFlags: 0

@@ -1,9 +1,9 @@
 // StructureNode.cs
-// Version: 0.7 (added Civ: each structure belongs to one civilization)
+// Version: 0.8 (added residents: a Dwelling houses up to 2 agents -- per GDD)
 // Purpose: Plain-C# build-site data for the TimeCraft prototype. Tracks owning civ,
-//          deposited wood, build progress (continuous game-time timer), and completion.
-//          Passive until an agent calls DepositWood then AdvanceBuild each sim step.
-//          No MonoBehaviour, no rendering.
+//          deposited wood, build progress (continuous game-time timer), completion, and
+//          occupancy (how many agents call this their home). Passive until an agent calls
+//          DepositWood then AdvanceBuild each sim step. No MonoBehaviour, no rendering.
 // Location: Assets/Scripts/Simulation/StructureNode.cs
 // Dependencies: System; CivId.
 // Events: none.
@@ -20,6 +20,12 @@ public class StructureNode
     public bool  HasEnoughWood       => WoodDeposited >= WoodRequired;
     public bool  IsBuilt             => BuildProgress >= 1f;
 
+    // Occupancy: a Dwelling houses up to 2 agents (GDD S10/S11). Agents assign themselves
+    // a home via TryAddResident; reproduction (later) triggers on a male+female pair here.
+    public int  MaxResidents  => 2;
+    public int  ResidentCount { get; private set; }
+    public bool HasFreeSlot   => ResidentCount < MaxResidents;
+
     public StructureNode(CivId civ, int cellX, int cellZ, int woodRequired, float buildDurationSeconds)
     {
         Civ                  = civ;
@@ -29,13 +35,20 @@ public class StructureNode
         BuildDurationSeconds = buildDurationSeconds;
     }
 
-    // Call once when the agent arrives at the site to transfer carried wood.
+    // Reserves one resident slot. Caller must only count an agent once (assign when the
+    // agent has no home yet). Returns false when the Dwelling is full.
+    public bool TryAddResident()
+    {
+        if (ResidentCount >= MaxResidents) return false;
+        ResidentCount++;
+        return true;
+    }
+
     public void DepositWood(int amount)
     {
         WoodDeposited = System.Math.Min(WoodDeposited + amount, WoodRequired);
     }
 
-    // Called every sim fixed step while an agent is actively building.
     public void AdvanceBuild(float dt)
     {
         if (!HasEnoughWood || IsBuilt) return;

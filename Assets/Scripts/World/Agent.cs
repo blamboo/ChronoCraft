@@ -1,5 +1,5 @@
 // Agent.cs
-// Version: 0.10 (added IsResting flag, set by the decision controller for Stamina)
+// Version: 0.11 (added Home: the agent's assigned Dwelling -- built/sheltered/slept in)
 // Purpose: Plain-C# simulation agent (NPC). Continuous position, speed-based movement,
 //          civ identity, resource inventory, and survival needs. Needs are driven by
 //          NeedsSystem (per tick); actions are chosen by AgentBehavior (the decision
@@ -34,6 +34,10 @@ public class Agent
 
     // Set true by AgentBehavior while resting at home; NeedsSystem recovers Stamina then.
     public bool IsResting = false;
+
+    // The Dwelling this agent has claimed as home (max 2 agents per Dwelling). Assigned
+    // lazily by AgentBehavior; the agent builds, shelters, and sleeps here.
+    public StructureNode Home;
 
     // ── Inventory ─────────────────────────────────────────────────────────────
     public int CarryCapacity = 3;

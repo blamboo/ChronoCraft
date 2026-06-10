@@ -1,10 +1,11 @@
 // StructureManager.cs
-// Version: 0.7 (one structure per civ, placed near each civ's spawn anchor; animates each)
+// Version: 0.8 (places one Dwelling per 2 agents per civ, spaced near the anchor; animates each)
 // Purpose: Unity bridge for prototype structures. Once the Simulation has registered its
-//          civs (AgentManager does this on spawn), places ONE StructureNode per civ on a
-//          free walkable cell near that civ's anchor, marks the cell occupied, and spawns
-//          a placeholder cube per site whose height/colour animate with build progress.
-//          Holds no sim logic -- it mirrors StructureNode state into the scene.
+//          civs and spawned its agents, places ceil(agents/2) Dwellings per civ on free
+//          walkable cells in a small spaced grid near that civ's anchor, marks each cell
+//          occupied, and spawns/animates a placeholder cube per site (height/colour follow
+//          build progress). Holds no sim logic. Single-cell placeholders for now -- true
+//          2x2 footprints, Storage, and town-territory placement are a later slice.
 // Location: Assets/Scripts/Simulation/StructureManager.cs
 // Dependencies: UnityEngine; System.Collections.Generic; SimulationRunner, GridManager,
 //               StructureNode, CivState.
@@ -21,13 +22,16 @@ public class StructureManager : MonoBehaviour
     [Tooltip("Drag the ProceduralTerrain GameObject here.")]
     [SerializeField] private GridManager gridManager;
 
-    [Header("Build site (one per civ, placed near each civ's spawn anchor)")]
-    [Tooltip("Wood units the agents must deliver before construction can begin.")]
+    [Header("Dwellings (one per 2 agents, per civ)")]
+    [Tooltip("Wood units delivered before a Dwelling can start building.")]
     [Range(1, 10)]
     [SerializeField] private int woodRequired = 3;
-    [Tooltip("Game-seconds to complete construction once wood is deposited.")]
+    [Tooltip("Game-seconds to finish a Dwelling once its wood is in.")]
     [Range(1f, 120f)]
     [SerializeField] private float buildDurationSeconds = 20f;
+    [Tooltip("Cells between Dwelling sites (also keeps them off each other / resources).")]
+    [Range(2, 8)]
+    [SerializeField] private int spacing = 3;
 
     private class Site { public StructureNode Node; public Transform View; public Renderer Renderer; }
     private readonly List<Site> sites = new List<Site>();
@@ -43,8 +47,7 @@ public class StructureManager : MonoBehaviour
             if (s.View == null) continue;
 
             float t = s.Node.BuildProgress;
-            float yScale = Mathf.Lerp(0.1f, 1.5f, t);                 // flat slab -> house height
-            s.View.localScale = new Vector3(0.9f, yScale, 0.9f);
+            s.View.localScale = new Vector3(0.9f, Mathf.Lerp(0.1f, 1.5f, t), 0.9f);
 
             var mpb = new MaterialPropertyBlock();
             mpb.SetColor("_BaseColor", Color.Lerp(
@@ -62,34 +65,49 @@ public class StructureManager : MonoBehaviour
         Simulation sim  = runner.Sim;
         if (grid == null || sim == null) return;
 
-        // Wait until AgentManager has registered the civs (one structure per civ).
-        if (sim.Civs.Count == 0) return;
+        // Wait until AgentManager has registered civs and spawned agents.
+        if (sim.Civs.Count == 0 || sim.Agents.Count == 0) return;
 
         foreach (CivState civ in sim.Civs)
         {
-            Vector2Int cell = NearestFreeWalkable(grid, new Vector2Int(civ.AnchorX, civ.AnchorZ));
+            int civAgents = 0;
+            for (int i = 0; i < sim.Agents.Count; i++)
+                if (sim.Agents[i].Civ == civ.Id) civAgents++;
 
-            StructureNode node = sim.AddStructureNode(civ.Id, cell.x, cell.y,
-                                                      woodRequired, buildDurationSeconds);
-            grid.SetOccupied(cell.x, cell.y, true);
+            int houses = Mathf.Max(1, Mathf.CeilToInt(civAgents / 2f));
+            int cols   = Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt(houses)));
 
-            var obj = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            obj.name = $"Structure ({civ.Id})";
-            obj.transform.SetParent(gridManager.transform, worldPositionStays: false);
-            Destroy(obj.GetComponent<Collider>());
+            for (int k = 0; k < houses; k++)
+            {
+                int col = k % cols;
+                int row = k / cols;
+                int tx  = civ.AnchorX + (col - (cols - 1) / 2) * spacing;
+                int tz  = civ.AnchorZ + row * spacing;
 
-            Vector3 local = grid.CellToLocal(cell.x, cell.y);
-            obj.transform.localPosition = new Vector3(local.x, local.y + 0.05f, local.z);
-            obj.transform.localScale    = new Vector3(0.9f, 0.1f, 0.9f);
+                Vector2Int cell = NearestFreeWalkable(grid, new Vector2Int(tx, tz));
 
-            sites.Add(new Site { Node = node, View = obj.transform, Renderer = obj.GetComponent<Renderer>() });
+                StructureNode node = sim.AddStructureNode(civ.Id, cell.x, cell.y,
+                                                          woodRequired, buildDurationSeconds);
+                grid.SetOccupied(cell.x, cell.y, true);
+
+                var obj = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                obj.name = $"Dwelling ({civ.Id}) #{k}";
+                obj.transform.SetParent(gridManager.transform, worldPositionStays: false);
+                Destroy(obj.GetComponent<Collider>());
+
+                Vector3 local = grid.CellToLocal(cell.x, cell.y);
+                obj.transform.localPosition = new Vector3(local.x, local.y + 0.05f, local.z);
+                obj.transform.localScale    = new Vector3(0.9f, 0.1f, 0.9f);
+
+                sites.Add(new Site { Node = node, View = obj.transform, Renderer = obj.GetComponent<Renderer>() });
+            }
         }
 
         initialized = true;
     }
 
-    // Nearest walkable AND unoccupied cell to c (so two civ structures never share a cell
-    // and never land on a resource cell). Falls back to nearest walkable, then c.
+    // Nearest walkable AND unoccupied cell to c (so sites never share a cell or land on a
+    // resource cell). Falls back to nearest walkable, then c.
     Vector2Int NearestFreeWalkable(GridData grid, Vector2Int c)
     {
         c.x = Mathf.Clamp(c.x, 0, grid.Width - 1);

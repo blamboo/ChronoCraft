@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.15)
+# TimeCraft — Architecture Document (v0.16)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -11,6 +11,13 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.16: one Dwelling per 2 agents (housing). StructureNode tracks residents
+(max 2, TryAddResident); Agent gains Home; StructureManager places ceil(agents/2)
+Dwellings per civ in a spaced grid near the anchor; AgentBehavior lazily claims the
+nearest own-civ Dwelling with a free slot and builds / shelters / sleeps at THAT home
+(no longer the first built structure). Single-cell placeholders for now -- true 2x2
+footprints, Storage, and town-territory placement are a later slice.
 
 Changes in v0.15: day/night schedule + Stamina rest (Phase B, B3). SimulationClock.IsNight
 splits each day in half. NeedsSystem now drains Stamina while active and refills it while
@@ -132,7 +139,8 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - Pathfinder.cs — Plain C# static. A* over GridData (4-connected, walkable only; water
   and hills are unwalkable so paths route around them). [Diagonal: see deferred-tech.]
 - Agent.cs — Plain C#. NPC: Civ, position, CellX/CellZ, Speed, four needs (Hunger/Thirst
-  rise toward bad; Stamina/Health are reserves), IsResting flag, inventory.
+  rise toward bad; Stamina/Health are reserves), IsResting flag, Home (assigned Dwelling),
+  inventory.
 - AgentManager.cs — MonoBehaviour bridge. Registers each civ's spawn anchor in the sim,
   spawns agentsPerCiv agents for Civ1 and Civ2 at opposite edges (ring-out from each
   anchor), tints capsules by civ, attaches an AgentBehavior + an AgentView to each, syncs
@@ -155,16 +163,18 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
   cells (marked occupied), Stone on reachable unwalkable hill cells; placeholder
   primitives (brown cube=wood, green sphere=food, grey cube=stone).
 - StructureNode.cs — Plain C#. Build-site data: Civ (owner), WoodRequired, WoodDeposited,
-  BuildProgress (0..1 continuous timer), IsBuilt. DepositWood + AdvanceBuild.
-- StructureManager.cs — MonoBehaviour bridge. Once sim.Civs is populated, places ONE
-  StructureNode per civ on a free walkable cell near that civ's anchor, marks it occupied,
-  and spawns/animates a placeholder cube per site (flat→tall with BuildProgress).
+  BuildProgress (0..1 continuous timer), IsBuilt; occupancy (ResidentCount, MaxResidents=2,
+  HasFreeSlot, TryAddResident). DepositWood + AdvanceBuild.
+- StructureManager.cs — MonoBehaviour bridge. Once civs + agents exist, places
+  ceil(civAgents/2) Dwellings per civ in a spaced grid near the anchor (free walkable
+  cells, marked occupied), and spawns/animates a placeholder cube per site (flat→tall).
 - AgentBehavior.cs — Plain C#. Per-agent decision controller. Each step ChooseIntent()
   picks by priority: Drinking (Thirst>=thr) > Eating (Hunger>=thr) > Resting (night, or
   Stamina exhausted, with wake hysteresis) > Working. Survival preempts all; Work never
   runs at night. Drinking → nearest drink point → drink. Eating → claim nearest food node →
-  eat. Resting → go home → set IsResting (Stamina recovers). Working → gather wood →
-  deliver to own-civ structure → build → idle at home. Exposes Action + Intent for
+  eat. Resting → go to OWN home → set IsResting (Stamina recovers). Working → gather wood →
+  build OWN Dwelling → idle at home. Each agent claims the nearest own-civ Dwelling with a
+  free slot (2 max) as Home. Exposes Action + Intent for
   AgentView. Mining/farming still to come (Phase C).
 
 ## Interaction map
@@ -177,9 +187,9 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - Resource loop: AgentBehavior.TrySeekResource picks the nearest UNCLAIMED node →
   ResourceNode.TryClaim → Pathfinder → agent.SetPath → arrive → harvestTimer →
   ResourceNode.Harvest → ReleaseNode → inventory → TryMoveToSite. One agent per node.
-- Work loop (lowest priority): gather wood (reserved nodes) → deliver to the OWN-civ
-  unbuilt structure → AdvanceBuild → once IsBuilt, idle at the home structure. No wood is
-  gathered once the structure is built. StructureManager reads BuildProgress for visuals.
+- Work loop (lowest priority): each agent claims its own Dwelling (2 per house) → gathers
+  wood → builds THAT Dwelling → once IsBuilt idles/shelters/sleeps there. No wood is
+  gathered once its house is built. StructureManager reads BuildProgress for visuals.
 - Needs/decision: NeedsSystem raises Hunger+Thirst (and drains/recovers Stamina by
   IsResting) each tick. AgentBehavior re-chooses an intent every step: thirsty → drink;
   else hungry → eat; else night/exhausted → rest at home (Stamina recovers); else Work.

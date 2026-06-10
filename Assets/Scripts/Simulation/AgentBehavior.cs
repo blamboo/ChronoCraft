@@ -1,15 +1,17 @@
 // AgentBehavior.cs
-// Version: 0.10 (added Resting intent + day/night schedule: rest at home at night or when
-//                exhausted; v0.9 = continuous Drink>Eat>Work decision controller)
+// Version: 0.11 (per-agent home: each agent claims its own Dwelling, 2 per house, and
+//                builds / shelters / sleeps there -- one house per 2 agents)
 // Purpose: Plain-C# per-agent decision controller (the DecisionSystem, one per agent).
 //          Each step it picks an INTENT by priority and executes it:
 //            1 Drinking  (Thirst >= threshold)        -> walk to nearest water, drink.
 //            2 Eating    (Hunger >= threshold)         -> walk to nearest food, eat.
-//            3 Resting   (night, or Stamina exhausted) -> go home, recover Stamina.
-//            4 Working   (daytime, nothing pressing)   -> gather wood, build the civ's
-//                                                         structure, then idle at home.
+//            3 Resting   (night, or Stamina exhausted) -> go to OWN home, recover Stamina.
+//            4 Working   (daytime, nothing pressing)   -> gather wood, build OWN Dwelling,
+//                                                         then idle at home.
 //          Survival (Drink/Eat) preempts everything; Work never runs at night. Needs are
 //          drained by NeedsSystem; this controller sets Agent.IsResting for Stamina.
+//          v0.11: the agent lazily claims the nearest own-civ Dwelling with a free slot
+//          (2 max) as agent.Home, so each pair builds and lives in its own house.
 // Location: Assets/Scripts/Simulation/AgentBehavior.cs
 // Dependencies: System.Collections.Generic; UnityEngine (Vector2Int/Mathf only).
 //               Agent, Simulation (Clock), ResourceNode, StructureNode, GridData, Pathfinder.
@@ -79,8 +81,6 @@ public class AgentBehavior
         return Intent.Working;
     }
 
-    // Rest at night, or when exhausted. Hysteresis: once resting, keep going until it's
-    // daytime AND Stamina has climbed back to the wake threshold.
     bool ShouldRest()
     {
         bool night = sim.Clock.IsNight;
@@ -166,7 +166,7 @@ public class AgentBehavior
         }
     }
 
-    // ── Resting (go home; recover Stamina; home-only) ─────────────────────────
+    // ── Resting (go to OWN home; recover Stamina; home-only) ──────────────────
     void UpdateRest(float dt)
     {
         switch (sub)
@@ -175,7 +175,7 @@ public class AgentBehavior
             {
                 Action = "Resting: go home";
                 agent.IsResting = false;
-                var home = OwnBuiltStructure();
+                var home = Home();
                 if (home == null) { agent.SetPath(null); sub = Sub.Act; break; } // no home yet
                 var path = Pathfinder.FindPath(grid,
                     new Vector2Int(agent.CellX, agent.CellZ),
@@ -191,32 +191,34 @@ public class AgentBehavior
                 break;
             case Sub.Act:
                 Action = sim.Clock.IsNight ? "Resting (night)" : "Resting";
-                // Stamina recovers only while actually at a home structure.
-                agent.IsResting = OwnBuiltStructure() != null;
+                // Stamina recovers only once the agent's own home exists and is built.
+                agent.IsResting = agent.Home != null && agent.Home.IsBuilt;
                 break;
         }
     }
 
-    // ── Working (gather wood -> build civ structure -> idle at home) ──────────
+    // ── Working (gather wood -> build OWN Dwelling -> idle at home) ────────────
     void UpdateWork(float dt)
     {
         switch (work)
         {
             case Work.SeekWood:
                 Action = "Working: seek wood";
-                if (OwnUnbuiltStructure() == null) { work = Work.GoHome; return; }
+                var home = Home();
+                if (home == null) return;                          // no Dwelling free yet -> wait
+                if (home.IsBuilt) { work = Work.GoHome; return; }  // my house is built -> idle
                 if (agent.WoodCarried >= agent.CarryCapacity) { BeginDeliver(); return; }
                 seekCooldown -= dt;
                 if (seekCooldown > 0f) return;
                 seekCooldown = SeekInterval;
-                var node = FindNearestUnclaimed(ResourceType.Wood);
-                if (node == null) { work = Work.GoHome; return; }
-                var path = Pathfinder.FindPath(grid,
+                var wnode = FindNearestUnclaimed(ResourceType.Wood);
+                if (wnode == null) { work = Work.GoHome; return; }
+                var wpath = Pathfinder.FindPath(grid,
                     new Vector2Int(agent.CellX, agent.CellZ),
-                    new Vector2Int(node.CellX, node.CellZ));
-                if (path == null) return;
-                node.TryClaim(agent); currentNode = node;
-                agent.SetPath(path); work = Work.MoveToWood;
+                    new Vector2Int(wnode.CellX, wnode.CellZ));
+                if (wpath == null) return;
+                wnode.TryClaim(agent); currentNode = wnode;
+                agent.SetPath(wpath); work = Work.MoveToWood;
                 break;
 
             case Work.MoveToWood:
@@ -262,12 +264,12 @@ public class AgentBehavior
             case Work.GoHome:
                 Action = "Working: go home";
                 {
-                    var home = OwnBuiltStructure();
-                    if (home != null)
+                    var h = Home();
+                    if (h != null)
                     {
                         var p = Pathfinder.FindPath(grid,
                             new Vector2Int(agent.CellX, agent.CellZ),
-                            new Vector2Int(home.CellX, home.CellZ));
+                            new Vector2Int(h.CellX, h.CellZ));
                         if (p != null) agent.SetPath(p);
                     }
                     work = Work.Idle;
@@ -276,21 +278,39 @@ public class AgentBehavior
 
             case Work.Idle:
                 Action = agent.HasPath ? "Working: go home" : "Idle (home)";
-                if (!agent.HasPath && OwnUnbuiltStructure() != null) work = Work.SeekWood;
+                // If my house still isn't built (e.g. just got assigned), go build it.
+                if (!agent.HasPath && agent.Home != null && !agent.Home.IsBuilt) work = Work.SeekWood;
                 break;
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-    StructureNode OwnUnbuiltStructure() =>
-        sim.StructureNodes.Find(n => n.Civ == agent.Civ && !n.IsBuilt);
-    StructureNode OwnBuiltStructure() =>
-        sim.StructureNodes.Find(n => n.Civ == agent.Civ && n.IsBuilt);
+    // ── Home assignment ───────────────────────────────────────────────────────
+    // The agent's assigned Dwelling. Lazily claims the nearest own-civ Dwelling that still
+    // has a free slot (2 agents per Dwelling), so each pair builds and lives in its own.
+    StructureNode Home()
+    {
+        if (agent.Home == null) AssignHome();
+        return agent.Home;
+    }
 
+    void AssignHome()
+    {
+        StructureNode best = null; float bestSq = float.MaxValue;
+        foreach (var s in sim.StructureNodes)
+        {
+            if (s.Civ != agent.Civ || !s.HasFreeSlot) continue;
+            float dx = s.CellX - agent.CellX, dz = s.CellZ - agent.CellZ;
+            float sq = dx * dx + dz * dz;
+            if (sq < bestSq) { bestSq = sq; best = s; }
+        }
+        if (best != null && best.TryAddResident()) agent.Home = best;
+    }
+
+    // ── Resource helpers ──────────────────────────────────────────────────────
     void BeginDeliver()
     {
-        var s = OwnUnbuiltStructure();
-        if (s == null) { agent.ClearInventory(); work = Work.GoHome; return; }
+        var s = Home();
+        if (s == null || s.IsBuilt) { agent.ClearInventory(); work = Work.GoHome; return; }
         var path = Pathfinder.FindPath(grid,
             new Vector2Int(agent.CellX, agent.CellZ),
             new Vector2Int(s.CellX, s.CellZ));

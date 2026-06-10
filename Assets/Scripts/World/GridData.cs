@@ -1,5 +1,5 @@
 // GridData.cs
-// Version: 0.6 (added TryGetWalkableNeighbor: shared access pattern for drinking/mining)
+// Version: 0.7 (added TryFindNearestDrinkPoint for the Thirst need)
 // Purpose: Plain-C# logical grid for the TimeCraft prototype. Holds one cell per
 //          terrain quad (height, walkability, occupancy, water) plus the cell<->local
 //          mapping. Deliberately decoupled from MonoBehaviours and rendering per the
@@ -98,6 +98,24 @@ public class GridData
         if (InBounds(x, z + 1) && Cells[x, z + 1].IsWater) return true;
         if (InBounds(x, z - 1) && Cells[x, z - 1].IsWater) return true;
         return false;
+    }
+
+    // Nearest drink point (walkable cell touching water) to (fromX, fromZ), by squared
+    // grid distance. O(Width*Depth) scan -- called occasionally (when an agent gets
+    // thirsty), not per frame. Returns false if the map has no water at all.
+    public bool TryFindNearestDrinkPoint(int fromX, int fromZ, out Vector2Int cell)
+    {
+        cell = new Vector2Int(-1, -1);
+        float best = float.MaxValue;
+        for (int z = 0; z < Depth; z++)
+        for (int x = 0; x < Width; x++)
+        {
+            if (!IsWaterAdjacent(x, z)) continue;
+            float dx = x - fromX, dz = z - fromZ;
+            float sq = dx * dx + dz * dz;
+            if (sq < best) { best = sq; cell = new Vector2Int(x, z); }
+        }
+        return cell.x >= 0;
     }
 
     // Returns the first walkable 4-neighbour of (x,z) -- the cell an agent stands on to

@@ -1,17 +1,14 @@
 // AgentManager.cs
-// Version: 0.9 (attaches an AgentView debug component to each capsule so per-agent
-//               state is visible in the Inspector; v0.8 registers civ anchors)
-// Purpose: Unity bridge that bootstraps the two-civ population. Spawns agentsPerCiv
-//          agents for Civ1 and Civ2 at opposite map edges, tints each civ's placeholder
-//          capsules, attaches an AgentBehavior to each (the v1 brain), and each frame
-//          syncs every capsule to its agent's continuous position.
-//          TRANSITIONAL (A3a): every agent still runs the v1 brain and targets the single
-//          shared StructureManager structure and the shared resource nodes, so the two
-//          civs will clump at one structure. Per-civ structures come in A3b; the
-//          needs/jobs/schedule rewrite is Phase B-C.
+// Version: 0.11 (adds Stamina drain/recover + rest thresholds for B3 day/night; shows
+//                Day + Night in the read-out; v0.10 created the NeedsSystem)
+// Purpose: Unity bridge that bootstraps the two-civ population and the NeedsSystem.
+//          Registers each civ's spawn anchor, spawns agentsPerCiv agents per civ at
+//          opposite edges (tinted), attaches an AgentBehavior (decision controller) + an
+//          AgentView (debug) to each, creates one NeedsSystem (drains Hunger/Thirst per
+//          tick), and syncs all capsules each frame.
 // Location: Assets/Scripts/World/AgentManager.cs
 // Dependencies: UnityEngine; System.Collections.Generic; SimulationRunner, GridManager,
-//               Agent, AgentBehavior, CivId.
+//               Agent, AgentBehavior, AgentView, NeedsSystem, CivId.
 // Events: none.
 
 using System.Collections.Generic;
@@ -20,54 +17,59 @@ using UnityEngine;
 public class AgentManager : MonoBehaviour
 {
     [Header("Scene references")]
-    [Tooltip("Drag the Simulation GameObject here.")]
     [SerializeField] private SimulationRunner runner;
-    [Tooltip("Drag the ProceduralTerrain GameObject here.")]
     [SerializeField] private GridManager gridManager;
 
     [Header("Civ spawn")]
-    [Tooltip("Agents spawned for EACH civ (so 12 here = 24 total).")]
-    [Range(1, 50)]
-    [SerializeField] private int agentsPerCiv = 12;
-    [Tooltip("How many cells in from the left/right edge each civ's group clusters.")]
-    [Range(1, 60)]
-    [SerializeField] private int edgeMargin = 8;
-    [Tooltip("Civ1 capsule tint (spawns on the west/low-X edge).")]
+    [Range(1, 50)]   [SerializeField] private int agentsPerCiv = 12;
+    [Range(1, 60)]   [SerializeField] private int edgeMargin   = 8;
     [SerializeField] private Color civ1Color = new Color(0.30f, 0.55f, 0.95f); // blue
-    [Tooltip("Civ2 capsule tint (spawns on the east/high-X edge).")]
     [SerializeField] private Color civ2Color = new Color(0.90f, 0.45f, 0.25f); // orange
 
     [Header("Agent")]
-    [Tooltip("Movement speed in cells per game-second (independent of tick rate).")]
-    [Range(0.25f, 20f)]
-    [SerializeField] private float agentSpeed = 3f;
-    [Tooltip("Vertical offset so the capsule sits on the surface.")]
+    [Range(0.25f, 20f)] [SerializeField] private float agentSpeed = 3f;
     [SerializeField] private float yOffset = 1f;
 
-    [Header("Behavior tuning")]
-    [Tooltip("Game-seconds spent at a resource node per gathering visit.")]
-    [Range(1f, 60f)]
-    [SerializeField] private float harvestDurationSeconds = 10f;
-    [Tooltip("Hunger added per logical tick. Tune to ticksPerDay: at 450 ticks/day, " +
-             "~0.25 drains 0->100 over ~0.9 day. (Was 10, tuned for the old 24-tick day.)")]
-    [Range(0.05f, 50f)]
-    [SerializeField] private float hungerDrainPerTick = 0.25f;
-    [Tooltip("Hunger level (0-100) that triggers the agent to seek food.")]
-    [Range(1f, 100f)]
-    [SerializeField] private float hungerThreshold = 50f;
+    [Header("Needs (drained per tick by NeedsSystem; tune to ticksPerDay 450)")]
+    [Tooltip("Hunger added per tick. ~0.25 reaches the threshold over ~0.4 day.")]
+    [Range(0.05f, 50f)] [SerializeField] private float hungerDrainPerTick = 0.25f;
+    [Tooltip("Thirst added per tick. Thirst is more urgent, so drain it faster than hunger.")]
+    [Range(0.05f, 50f)] [SerializeField] private float thirstDrainPerTick = 0.40f;
+    [Range(1f, 100f)]  [SerializeField] private float hungerThreshold = 50f;
+    [Range(1f, 100f)]  [SerializeField] private float thirstThreshold = 50f;
+    [Tooltip("Stamina lost per tick while active (working/walking).")]
+    [Range(0f, 50f)]   [SerializeField] private float staminaDrainPerTick = 0.30f;
+    [Tooltip("Stamina regained per tick while resting at home.")]
+    [Range(0f, 50f)]   [SerializeField] private float staminaRecoverPerTick = 0.60f;
+    [Tooltip("Stamina at/below this triggers rest even during the day.")]
+    [Range(1f, 100f)]  [SerializeField] private float staminaRestThreshold = 20f;
+    [Tooltip("During the day, rest ends once Stamina climbs back to this.")]
+    [Range(1f, 100f)]  [SerializeField] private float staminaWakeThreshold = 80f;
 
-    [Header("Read-out (Play mode -- editing has no effect)")]
-    [SerializeField] private int civ1Agents;
-    [SerializeField] private int civ2Agents;
+    [Header("Action durations (game-seconds)")]
+    [Range(1f, 60f)] [SerializeField] private float harvestDurationSeconds = 10f;
+    [Range(1f, 60f)] [SerializeField] private float drinkDurationSeconds   = 5f;
+    [Range(1f, 60f)] [SerializeField] private float eatDurationSeconds     = 5f;
+
+    [Header("Read-out (Play mode)")]
+    [SerializeField] private int  civ1Agents;
+    [SerializeField] private int  civ2Agents;
+    [SerializeField] private int  day;
+    [SerializeField] private bool night;
 
     private class View { public Agent Agent; public Transform Tf; }
     private readonly List<View> views = new List<View>();
+    private NeedsSystem needs;
     private bool initialized;
 
     void Update()
     {
         if (!initialized) { TryInitialize(); if (!initialized) return; }
         SyncViews();
+
+        var clock = runner.Sim.Clock;
+        day   = clock.Day;
+        night = clock.IsNight;
     }
 
     void TryInitialize()
@@ -81,15 +83,16 @@ public class AgentManager : MonoBehaviour
         civ1Agents = SpawnCiv(sim, grid, CivId.Civ1, new Vector2Int(edgeMargin, cz), civ1Color);
         civ2Agents = SpawnCiv(sim, grid, CivId.Civ2, new Vector2Int(grid.Width - 1 - edgeMargin, cz), civ2Color);
 
+        // One system drains everyone's needs each tick.
+        needs = new NeedsSystem(sim, hungerDrainPerTick, thirstDrainPerTick,
+                                staminaDrainPerTick, staminaRecoverPerTick);
+
         initialized = true;
         SyncViews();
     }
 
-    // Spawns up to agentsPerCiv agents on walkable cells, ringing outward from the anchor
-    // so the group clusters. Returns the number actually placed.
     int SpawnCiv(Simulation sim, GridData grid, CivId civ, Vector2Int anchor, Color color)
     {
-        // Record this civ's home anchor so StructureManager places its structure here.
         sim.RegisterCiv(civ, anchor.x, anchor.y);
 
         int placed = 0;
@@ -99,7 +102,7 @@ public class AgentManager : MonoBehaviour
             for (int dz = -r; dz <= r && placed < agentsPerCiv; dz++)
             for (int dx = -r; dx <= r && placed < agentsPerCiv; dx++)
             {
-                if (Mathf.Abs(dx) != r && Mathf.Abs(dz) != r) continue; // ring perimeter only
+                if (Mathf.Abs(dx) != r && Mathf.Abs(dz) != r) continue;
                 int x = anchor.x + dx, z = anchor.y + dz;
                 if (!grid.InBounds(x, z) || !grid.Cells[x, z].Walkable) continue;
                 SpawnAgent(sim, grid, civ, new Vector2Int(x, z), color);
@@ -111,14 +114,18 @@ public class AgentManager : MonoBehaviour
 
     void SpawnAgent(Simulation sim, GridData grid, CivId civ, Vector2Int cell, Color color)
     {
-        Agent agent  = sim.AddAgent(cell.x, cell.y);
-        agent.Speed  = agentSpeed;
-        agent.Civ    = civ;
+        Agent agent = sim.AddAgent(cell.x, cell.y);
+        agent.Speed = agentSpeed;
+        agent.Civ   = civ;
 
         AgentBehavior b = sim.AddAgentBehavior(agent, grid);
-        b.HarvestDurationSeconds = harvestDurationSeconds;
-        b.HungerDrainPerTick     = hungerDrainPerTick;
         b.HungerThreshold        = hungerThreshold;
+        b.ThirstThreshold        = thirstThreshold;
+        b.StaminaRestThreshold   = staminaRestThreshold;
+        b.StaminaWakeThreshold   = staminaWakeThreshold;
+        b.HarvestDurationSeconds = harvestDurationSeconds;
+        b.DrinkDurationSeconds   = drinkDurationSeconds;
+        b.EatDurationSeconds     = eatDurationSeconds;
 
         var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
         go.name = $"Agent ({civ})";
@@ -129,7 +136,6 @@ public class AgentManager : MonoBehaviour
         mpb.SetColor("_BaseColor", color);
         go.GetComponent<Renderer>().SetPropertyBlock(mpb);
 
-        // Live per-agent read-out: select the capsule to see its state in the Inspector.
         go.AddComponent<AgentView>().Bind(agent, b);
 
         views.Add(new View { Agent = agent, Tf = go.transform });
@@ -145,4 +151,6 @@ public class AgentManager : MonoBehaviour
             v.Tf.position = gridManager.transform.TransformPoint(local) + Vector3.up * yOffset;
         }
     }
+
+    void OnDestroy() { needs?.Dispose(); }
 }

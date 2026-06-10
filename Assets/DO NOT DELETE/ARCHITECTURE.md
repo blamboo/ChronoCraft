@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.13)
+# TimeCraft — Architecture Document (v0.15)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -11,6 +11,21 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.15: day/night schedule + Stamina rest (Phase B, B3). SimulationClock.IsNight
+splits each day in half. NeedsSystem now drains Stamina while active and refills it while
+Agent.IsResting (home-only). AgentBehavior gains a Resting intent (priority 3, below
+Drink/Eat, above Work): rest at home at night or when exhausted, with wake hysteresis; Work
+no longer runs at night. Health/death still deferred (would starve everyone out before
+farms). Next: Phase C -- jobs, town-planner, farming + wild-food respawn.
+
+Changes in v0.14: needs + decision controller (Phase B, B2). Agent gains the four needs
+(Hunger/Thirst/Stamina/Health). NeedsSystem drains Hunger+Thirst each tick. AgentBehavior
+is rewritten from the rigid FSM into a continuous decision controller that picks an intent
+by priority each step -- Drinking > Eating > Working -- so survival preempts work and the
+freeze is gone; it drinks at the lake (GridData.TryFindNearestDrinkPoint) and idles at home
+once the civ's structure is built (no more wood over-gathering). Stamina/Health dynamics,
+day-night rest (B3), and the job system + farming (Phase C) are still to come.
 
 Changes in v0.13: per-agent debug read-out (Phase B, B1). AgentView mirrors each
 agent's live state (civ, current action, hunger, inventory, cell) into the Inspector;
@@ -64,14 +79,15 @@ SimulationRunner. Two independent cadences:
   Hunger drains each tick; stats and day clock are tick-driven.
 `timeScale` (live) scales real→game time equally for both.
 Runner set to secondsPerDay = 1350, ticksPerDay = 450 (GDD S13). Per-tick rates are
-authored against 450 ticks/day: hunger-drain default is 0.25/tick (AgentManager). Night
-begins at TickOfDay >= 225 once the schedule (Phase B) is wired.
+authored against 450 ticks/day (hunger/thirst/stamina drains in AgentManager). Night is
+the second half of the day: SimulationClock.IsNight is true for TickOfDay >= 225.
 
 ## Advance order (per fixed step)
 
 1. Agent.Advance(dt)           — continuous movement
 2. AgentBehavior.Update(dt)    — state-machine transitions, timers (harvest, build)
-3. Tick cadence                — OnTick fires (hunger drain, future stats, day rollover)
+3. Tick cadence                — OnTick fires; NeedsSystem drains Hunger+Thirst+Stamina
+                                 (recovers Stamina if resting), day rollover
 
 ## File / folder tree (actual project layout)
 
@@ -91,6 +107,7 @@ Assets/
       SimulationClock.cs
       Simulation.cs
       SimulationRunner.cs
+      NeedsSystem.cs
       ResourceNode.cs
       ResourceManager.cs
       StructureNode.cs
@@ -107,29 +124,31 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
   waterLevel (local-Y of the water surface).
 - GridData.cs — Plain C#. One GridCell per quad: Height, Walkable, Occupied, IsWater;
   Build (water + slope classification), SetOccupied, IsWaterAdjacent (drink points),
-  TryGetWalkableNeighbor (stand-on cell for mining/drinking), CellToLocal,
-  ContinuousToLocal, LocalToCell.
+  TryGetWalkableNeighbor (stand-on cell for mining), TryFindNearestDrinkPoint (Thirst),
+  CellToLocal, ContinuousToLocal, LocalToCell.
 - GridManager.cs — MonoBehaviour adapter. Builds/owns GridData (forwards waterLevel);
   Scene gizmo overlay (green walkable / red unwalkable / blue water); RebuildWaterPlane
   context menu spawns a water plane at waterLevel (edit-mode + Play; Game-view visible).
 - Pathfinder.cs — Plain C# static. A* over GridData (4-connected, walkable only; water
   and hills are unwalkable so paths route around them). [Diagonal: see deferred-tech.]
-- Agent.cs — Plain C#. NPC: Civ (CivId), continuous position (PosX/PosZ), CellX/CellZ,
-  Speed, Hunger (per tick), inventory (Wood/Food/Stone Carried, CarryCapacity).
+- Agent.cs — Plain C#. NPC: Civ, position, CellX/CellZ, Speed, four needs (Hunger/Thirst
+  rise toward bad; Stamina/Health are reserves), IsResting flag, inventory.
 - AgentManager.cs — MonoBehaviour bridge. Registers each civ's spawn anchor in the sim,
   spawns agentsPerCiv agents for Civ1 and Civ2 at opposite edges (ring-out from each
   anchor), tints capsules by civ, attaches an AgentBehavior + an AgentView to each, syncs
-  all capsules.
+  all capsules, creates the single NeedsSystem, and shows Day/Night in its read-out.
 - AgentView.cs — MonoBehaviour, debug instrument. Attached per capsule; mirrors its
-  agent's live state (civ, action, hunger, inventory, cell) into the Inspector. Read-only.
+  agent's live state (civ, Action/intent, four needs, inventory, cell) into the Inspector.
 - Civ.cs — Plain C#. CivId enum (None/Civ1/Civ2) + CivState (per-civ record with spawn
   anchor). Civ identity carried by Agent and StructureNode.
-- SimulationClock.cs — Plain C#. Tick counter; derives Day and TickOfDay.
+- SimulationClock.cs — Plain C#. Tick counter; derives Day, TickOfDay, IsNight (2nd half).
 - Simulation.cs — Plain C#. Sim root; owns Civs (registry + RegisterCiv), Agents,
   ResourceNodes, StructureNodes, AgentBehaviors; AddStructureNode takes a CivId;
   Advance(dt) runs the advance order above.
 - SimulationRunner.cs — MonoBehaviour bridge. Fixed-step loop; secondsPerDay +
   ticksPerDay (Play start); timeScale (live); exposes Sim.
+- NeedsSystem.cs — Plain C#. Subscribes OnTick; per agent raises Hunger+Thirst and, by
+  IsResting, drains or recovers Stamina (home-only). Health dynamics deferred.
 - ResourceNode.cs — Plain C#. Passive sim data: Type (Wood/Food/Stone), cell, Amount,
   Depleted, Harvest(); single-agent reservation (ClaimedBy, TryClaim, Release).
 - ResourceManager.cs — MonoBehaviour bridge. Seed-based scatter: Wood/Food on walkable
@@ -140,15 +159,13 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - StructureManager.cs — MonoBehaviour bridge. Once sim.Civs is populated, places ONE
   StructureNode per civ on a free walkable cell near that civ's anchor, marks it occupied,
   and spawns/animates a placeholder cube per site (flat→tall with BuildProgress).
-- AgentBehavior.cs — Plain C#. Full NPC lifecycle FSM (10 states):
-    SeekWood → MoveToWood → HarvestWood (10 s timer) →
-    MoveToSite → Building (20 s timer, AdvanceBuild) →
-    InHome → SeekFood → MoveToFood → HarvestFood (10 s timer, resets hunger) →
-    ReturnHome → InHome (loop).
-  Hunger drains each OnTick (tick-based); movement and timers are continuous.
-  Structure lookups are civ-scoped (builds/shelters at agent.Civ's own structure).
-  NOTE: this monolithic FSM is the v1 brain; Phase B replaces its fixed ordering with
-  the GDD S7 needs/decision-priority model. Does not mine (no Miner job yet).
+- AgentBehavior.cs — Plain C#. Per-agent decision controller. Each step ChooseIntent()
+  picks by priority: Drinking (Thirst>=thr) > Eating (Hunger>=thr) > Resting (night, or
+  Stamina exhausted, with wake hysteresis) > Working. Survival preempts all; Work never
+  runs at night. Drinking → nearest drink point → drink. Eating → claim nearest food node →
+  eat. Resting → go home → set IsResting (Stamina recovers). Working → gather wood →
+  deliver to own-civ structure → build → idle at home. Exposes Action + Intent for
+  AgentView. Mining/farming still to come (Phase C).
 
 ## Interaction map
 
@@ -160,11 +177,13 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - Resource loop: AgentBehavior.TrySeekResource picks the nearest UNCLAIMED node →
   ResourceNode.TryClaim → Pathfinder → agent.SetPath → arrive → harvestTimer →
   ResourceNode.Harvest → ReleaseNode → inventory → TryMoveToSite. One agent per node.
-- Build loop: TryMoveToSite finds the agent's OWN-civ unbuilt structure → DepositWood →
-  AdvanceBuild each step → IsBuilt → InHome (own-civ built structure). StructureManager
-  reads each site's BuildProgress for visuals.
-- Hunger loop: OnTick → agent.Hunger += drain → InHome check → SeekFood → HarvestFood
-  → agent.Hunger = 0 → ReturnHome → InHome.
+- Work loop (lowest priority): gather wood (reserved nodes) → deliver to the OWN-civ
+  unbuilt structure → AdvanceBuild → once IsBuilt, idle at the home structure. No wood is
+  gathered once the structure is built. StructureManager reads BuildProgress for visuals.
+- Needs/decision: NeedsSystem raises Hunger+Thirst (and drains/recovers Stamina by
+  IsResting) each tick. AgentBehavior re-chooses an intent every step: thirsty → drink;
+  else hungry → eat; else night/exhausted → rest at home (Stamina recovers); else Work.
+  Survival preempts all; Work is daytime-only.
 - GridData.SetOccupied used by ResourceManager (resource cells) and StructureManager
   (build site). Pathfinder checks Walkable only so agents can reach occupied cells.
 - Water/hills: GridData.Build flags IsWater (unwalkable); hill cells are unwalkable by

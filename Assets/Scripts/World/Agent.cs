@@ -1,34 +1,39 @@
 // Agent.cs
-// Version: 0.8 (added Civ identity for the two-civilization world)
+// Version: 0.10 (added IsResting flag, set by the decision controller for Stamina)
 // Purpose: Plain-C# simulation agent (NPC). Continuous position, speed-based movement,
-//          civ identity, resource inventory, and a hunger float drained each tick by
-//          AgentBehavior. Pure sim state; no MonoBehaviour, no rendering.
+//          civ identity, resource inventory, and survival needs. Needs are driven by
+//          NeedsSystem (per tick); actions are chosen by AgentBehavior (the decision
+//          controller). Pure sim state; no MonoBehaviour, no rendering.
+//          Need conventions (0..100): Hunger and Thirst RISE toward bad (0 = satisfied,
+//          100 = starving/parched). Stamina and Health are reserves that FALL toward bad
+//          (100 = full, 0 = spent/dead). Stamina/Health are wired in a later slice.
 // Location: Assets/Scripts/World/Agent.cs
 // Dependencies: System.Collections.Generic; UnityEngine (Vector2Int/Mathf only); CivId.
-// Events: none. Advanced by Simulation.Advance(dt) each fixed sim step.
+// Events: none. Advanced by Simulation.Advance(dt); needs drained by NeedsSystem.
 
 using System.Collections.Generic;
 using UnityEngine;
 
 public class Agent
 {
-    // Which civilization this agent belongs to. Set by the spawner.
     public CivId Civ = CivId.None;
 
     // Movement speed in cells per game-second. NOT tied to tick rate.
     public float Speed = 3f;
 
-    // Continuous position in cell space.
     public float PosX { get; private set; }
     public float PosZ { get; private set; }
-
-    // Nearest logical cell for systems that need a discrete address.
     public int CellX => Mathf.RoundToInt(PosX);
     public int CellZ => Mathf.RoundToInt(PosZ);
 
-    // ── Hunger ────────────────────────────────────────────────────────────────
-    // Drained each logical tick by AgentBehavior. Range 0..100.
-    public float Hunger = 0f;
+    // ── Needs (0..100) ──────────────────────────────────────────────────────
+    public float Hunger  = 0f;    // rises toward bad; eating resets to 0
+    public float Thirst  = 0f;    // rises toward bad; drinking resets to 0
+    public float Stamina = 100f;  // falls toward bad (wired later: B3 rest)
+    public float Health  = 100f;  // falls toward bad (wired later)
+
+    // Set true by AgentBehavior while resting at home; NeedsSystem recovers Stamina then.
+    public bool IsResting = false;
 
     // ── Inventory ─────────────────────────────────────────────────────────────
     public int CarryCapacity = 3;
@@ -53,11 +58,7 @@ public class Agent
     private List<Vector2Int> path;
     private int nextIndex;
 
-    public Agent(int startX, int startZ)
-    {
-        PosX = startX;
-        PosZ = startZ;
-    }
+    public Agent(int startX, int startZ) { PosX = startX; PosZ = startZ; }
 
     public bool HasPath => path != null && nextIndex < path.Count;
 
@@ -66,9 +67,7 @@ public class Agent
         path = newPath;
         if (path != null && path.Count > 0)
         {
-            PosX      = path[0].x;
-            PosZ      = path[0].y;
-            nextIndex = 1;
+            PosX = path[0].x; PosZ = path[0].y; nextIndex = 1;
         }
         else nextIndex = 0;
     }
@@ -80,20 +79,10 @@ public class Agent
         while (budget > 0f && HasPath)
         {
             Vector2Int target = path[nextIndex];
-            float dx   = target.x - PosX;
-            float dz   = target.y - PosZ;
+            float dx = target.x - PosX, dz = target.y - PosZ;
             float dist = Mathf.Sqrt(dx * dx + dz * dz);
-            if (dist <= budget)
-            {
-                PosX = target.x; PosZ = target.y;
-                budget -= dist; nextIndex++;
-            }
-            else
-            {
-                float inv = budget / dist;
-                PosX += dx * inv; PosZ += dz * inv;
-                budget = 0f;
-            }
+            if (dist <= budget) { PosX = target.x; PosZ = target.y; budget -= dist; nextIndex++; }
+            else { float inv = budget / dist; PosX += dx * inv; PosZ += dz * inv; budget = 0f; }
         }
     }
 }

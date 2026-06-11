@@ -21,6 +21,10 @@ public class AgentView : MonoBehaviour
     [SerializeField] private float stamina;
     [SerializeField] private float health;
 
+    [Header("Home")]
+    [SerializeField] private string homeCell   = "-";
+    [SerializeField] private bool   homeBuilt;
+
     [Header("Inventory / position")]
     [SerializeField] private int        wood;
     [SerializeField] private int        food;
@@ -45,5 +49,7 @@ public class AgentView : MonoBehaviour
         food    = agent.FoodCarried;
         stone   = agent.StoneCarried;
         cell    = new Vector2Int(agent.CellX, agent.CellZ);
+        homeCell  = agent.Home != null ? $"({agent.Home.CellX},{agent.Home.CellZ})" : "none";
+        homeBuilt = agent.Home != null && agent.Home.IsBuilt;
     }
 }

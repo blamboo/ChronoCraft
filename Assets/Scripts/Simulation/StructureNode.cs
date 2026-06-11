@@ -1,5 +1,5 @@
 // StructureNode.cs
-// Version: 0.8 (added residents: a Dwelling houses up to 2 agents -- per GDD)
+// Version: 0.9 (added StructureType enum + Type field so agents distinguish Storage from Dwelling)
 // Purpose: Plain-C# build-site data for the TimeCraft prototype. Tracks owning civ,
 //          deposited wood, build progress (continuous game-time timer), completion, and
 //          occupancy (how many agents call this their home). Passive until an agent calls
@@ -8,26 +8,30 @@
 // Dependencies: System; CivId.
 // Events: none.
 
+public enum StructureType { Dwelling, Storage, Farm }
+
 public class StructureNode
 {
-    public CivId Civ                 { get; }
-    public int   CellX               { get; }
-    public int   CellZ               { get; }
-    public int   WoodRequired        { get; }
-    public int   WoodDeposited       { get; private set; }
-    public float BuildDurationSeconds { get; }
-    public float BuildProgress       { get; private set; } // 0..1
-    public bool  HasEnoughWood       => WoodDeposited >= WoodRequired;
-    public bool  IsBuilt             => BuildProgress >= 1f;
+    public StructureType Type             { get; }
+    public CivId         Civ              { get; }
+    public int           CellX            { get; }
+    public int           CellZ            { get; }
+    public int           WoodRequired     { get; }
+    public int           WoodDeposited    { get; private set; }
+    public float         BuildDurationSeconds { get; }
+    public float         BuildProgress    { get; private set; } // 0..1
+    public bool          HasEnoughWood    => WoodDeposited >= WoodRequired;
+    public bool          IsBuilt          => BuildProgress >= 1f;
 
-    // Occupancy: a Dwelling houses up to 2 agents (GDD S10/S11). Agents assign themselves
-    // a home via TryAddResident; reproduction (later) triggers on a male+female pair here.
+    // Occupancy: a Dwelling houses up to 2 agents (GDD S10/S11).
     public int  MaxResidents  => 2;
     public int  ResidentCount { get; private set; }
     public bool HasFreeSlot   => ResidentCount < MaxResidents;
 
-    public StructureNode(CivId civ, int cellX, int cellZ, int woodRequired, float buildDurationSeconds)
+    public StructureNode(StructureType type, CivId civ, int cellX, int cellZ,
+                         int woodRequired, float buildDurationSeconds)
     {
+        Type                 = type;
         Civ                  = civ;
         CellX                = cellX;
         CellZ                = cellZ;
@@ -35,8 +39,6 @@ public class StructureNode
         BuildDurationSeconds = buildDurationSeconds;
     }
 
-    // Reserves one resident slot. Caller must only count an agent once (assign when the
-    // agent has no home yet). Returns false when the Dwelling is full.
     public bool TryAddResident()
     {
         if (ResidentCount >= MaxResidents) return false;

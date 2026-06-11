@@ -1,11 +1,10 @@
 // Simulation.cs
-// Version: 0.7 (added civ registry: Civs + RegisterCiv; AddStructureNode now takes CivId)
-// Purpose: Plain-C# sim root. Owns Civs, Agents, ResourceNodes, StructureNodes, and
-//          AgentBehaviors. Advances all per fixed step. Two independent cadences:
-//          continuous movement and discrete tick (hunger drain, day clock).
+// Version: 0.8 (added StorageNodes list + AddStorageNode; StructureNode now takes StructureType)
+// Purpose: Plain-C# sim root. Owns Civs, Agents, ResourceNodes, StructureNodes,
+//          StorageNodes, and AgentBehaviors. Advances all per fixed step.
 // Location: Assets/Scripts/Simulation/Simulation.cs
 // Dependencies: System; System.Collections.Generic; SimulationClock; Agent; CivId/CivState;
-//               ResourceNode; StructureNode; AgentBehavior; GridData.
+//               ResourceNode; StructureNode; StorageNode; AgentBehavior; GridData.
 // Events emitted: OnTick; OnDayChanged(int).
 
 using System;
@@ -18,6 +17,7 @@ public class Simulation
     public List<Agent>         Agents         { get; } = new List<Agent>();
     public List<ResourceNode>  ResourceNodes  { get; } = new List<ResourceNode>();
     public List<StructureNode> StructureNodes { get; } = new List<StructureNode>();
+    public List<StorageNode>   StorageNodes   { get; } = new List<StorageNode>();
     public List<AgentBehavior> AgentBehaviors { get; } = new List<AgentBehavior>();
 
     public double SecondsPerTick { get; }
@@ -33,8 +33,6 @@ public class Simulation
         SecondsPerTick = Math.Max(0.0001, secondsPerDay) / Math.Max(1, ticksPerDay);
     }
 
-    // Registers a civ and its spawn anchor cell. Read by systems that need a civ's home
-    // (e.g. StructureManager places one structure per civ near its anchor).
     public CivState RegisterCiv(CivId id, int anchorX, int anchorZ)
     {
         var c = new CivState(id, anchorX, anchorZ);
@@ -56,11 +54,19 @@ public class Simulation
         return n;
     }
 
-    public StructureNode AddStructureNode(CivId civ, int cellX, int cellZ, int woodRequired,
-                                          float buildDurationSeconds)
+    // StructureNode now requires a StructureType (Dwelling / Storage / Farm).
+    public StructureNode AddStructureNode(StructureType type, CivId civ, int cellX, int cellZ,
+                                          int woodRequired, float buildDurationSeconds)
     {
-        var s = new StructureNode(civ, cellX, cellZ, woodRequired, buildDurationSeconds);
+        var s = new StructureNode(type, civ, cellX, cellZ, woodRequired, buildDurationSeconds);
         StructureNodes.Add(s);
+        return s;
+    }
+
+    public StorageNode AddStorageNode(CivId civ, int cellX, int cellZ)
+    {
+        var s = new StorageNode(civ, cellX, cellZ);
+        StorageNodes.Add(s);
         return s;
     }
 
@@ -71,10 +77,6 @@ public class Simulation
         return b;
     }
 
-    // Advance order per fixed step:
-    //   1. Agent movement (continuous).
-    //   2. AgentBehavior updates (state transitions, build timer, harvest timer).
-    //   3. Tick cadence (OnTick fires hunger drain and future stats).
     public void Advance(double dt)
     {
         for (int i = 0; i < Agents.Count; i++)

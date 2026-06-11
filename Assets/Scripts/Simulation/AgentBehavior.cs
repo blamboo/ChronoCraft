@@ -1,20 +1,11 @@
 // AgentBehavior.cs
-// Version: 0.11 (per-agent home: each agent claims its own Dwelling, 2 per house, and
-//                builds / shelters / sleeps there -- one house per 2 agents)
-// Purpose: Plain-C# per-agent decision controller (the DecisionSystem, one per agent).
-//          Each step it picks an INTENT by priority and executes it:
-//            1 Drinking  (Thirst >= threshold)        -> walk to nearest water, drink.
-//            2 Eating    (Hunger >= threshold)         -> walk to nearest food, eat.
-//            3 Resting   (night, or Stamina exhausted) -> go to OWN home, recover Stamina.
-//            4 Working   (daytime, nothing pressing)   -> gather wood, build OWN Dwelling,
-//                                                         then idle at home.
-//          Survival (Drink/Eat) preempts everything; Work never runs at night. Needs are
-//          drained by NeedsSystem; this controller sets Agent.IsResting for Stamina.
-//          v0.11: the agent lazily claims the nearest own-civ Dwelling with a free slot
-//          (2 max) as agent.Home, so each pair builds and lives in its own house.
+// Version: 0.15 (fix: noFoodTicks tick-based, NOT reset in Abandon — survives drink
+//                interrupts; drink-point scan cached to eliminate lag on food depletion)
+// Purpose: Plain-C# per-agent decision controller.
+//          Priority: Drinking > Eating (critical at night) > Resting > Eating (normal) > Working.
 // Location: Assets/Scripts/Simulation/AgentBehavior.cs
-// Dependencies: System.Collections.Generic; UnityEngine (Vector2Int/Mathf only).
-//               Agent, Simulation (Clock), ResourceNode, StructureNode, GridData, Pathfinder.
+// Dependencies: UnityEngine (Vector2Int/Mathf); Agent, Simulation, ResourceNode,
+//               StructureNode, StorageNode, GridData, Pathfinder.
 // Events: none.
 
 using System.Collections.Generic;
@@ -24,33 +15,61 @@ public class AgentBehavior
 {
     public enum Intent { Working, Drinking, Eating, Resting }
     public Intent CurrentIntent { get; private set; } = Intent.Working;
-
     public string Action { get; private set; } = "Working";
 
-    // Tuning (set by AgentManager).
+    // Tuning knobs (set by AgentManager).
     public float ThirstThreshold        = 50f;
     public float HungerThreshold        = 50f;
-    public float StaminaRestThreshold   = 20f;  // drop to this -> rest even by day
-    public float StaminaWakeThreshold   = 80f;  // recover to this -> stop a daytime rest
+    // Hunger above this overrides rest even at night (near-starvation).
+    public float HungerCriticalThreshold = 80f;
+    public float StaminaRestThreshold   = 20f;
+    public float StaminaWakeThreshold   = 80f;
     public float HarvestDurationSeconds = 10f;
     public float DrinkDurationSeconds   = 5f;
     public float EatDurationSeconds     = 5f;
+    // How long to idle before re-seeking when there's nothing to do.
+    public float IdleCooldownSeconds    = 3f;
 
-    private enum Work { SeekWood, MoveToWood, HarvestWood, MoveToSite, Building, GoHome, Idle }
-    private enum Sub  { Seek, MoveTo, Act }
+    private enum WorkState
+    {
+        Seek,
+        MoveToStorage,  // Builder: walking to Storage to withdraw wood
+        MoveToResource,
+        Harvest,
+        MoveToDeposit,
+        Deposit,
+        MoveToSite,
+        Build,
+        GoHome,
+        Idle
+    }
+    private enum Sub { Seek, MoveTo, Act }
 
     private readonly Agent      agent;
     private readonly Simulation sim;
     private readonly GridData   grid;
 
-    private Work work = Work.SeekWood;
-    private Sub  sub  = Sub.Seek;
+    private WorkState work     = WorkState.Seek;
+    private Sub       drinkSub = Sub.Seek;
+    private Sub       eatSub   = Sub.Seek;
+    private Sub       restSub  = Sub.Seek;
 
     private ResourceNode  currentNode;
-    private StructureNode currentStructure;
+    private StructureNode currentSite;
     private float actTimer;
     private float seekCooldown;
+    private float idleTimer;
+    // Tick-based food suppression. NOT reset in Abandon — food availability is world
+    // state, not action state. Must survive intent switches (drink interrupting eat).
+    private int   noFoodTicks;
+    private const int NoFoodTickDuration = 113; // ~quarter-day at 450 ticks/day
     private const float SeekInterval = 0.5f;
+
+    // Drink-point cache — avoids O(W*D) grid scan every seek cycle.
+    private Vector2Int cachedDrinkPoint = new Vector2Int(-1, -1);
+    private int        drinkCacheFromX  = int.MinValue;
+    private int        drinkCacheFromZ  = int.MinValue;
+    private const int  DrinkCacheRadius = 3;
 
     public AgentBehavior(Agent agent, Simulation sim, GridData grid)
     {
@@ -73,11 +92,26 @@ public class AgentBehavior
         }
     }
 
+    // Called once per sim tick by AgentManager (via Simulation.OnTick).
+    public void OnTick()
+    {
+        if (noFoodTicks > 0) noFoodTicks--;
+    }
+
+    // ── Intent selection ──────────────────────────────────────────────────────
+    // Thirst always wins.
+    // Critical hunger (>=HungerCriticalThreshold) wins over rest even at night.
+    // At night, normal hunger loses to rest — agent sleeps hungry rather than
+    // roaming for food that may not exist.
+    // Below critical, hunger is only acted on during the day.
     Intent ChooseIntent()
     {
         if (agent.Thirst >= ThirstThreshold) return Intent.Drinking;
-        if (agent.Hunger >= HungerThreshold) return Intent.Eating;
-        if (ShouldRest())                    return Intent.Resting;
+
+        bool foodBlocked = noFoodTicks > 0;
+        if (!foodBlocked && agent.Hunger >= HungerCriticalThreshold) return Intent.Eating;
+        if (ShouldRest())                                             return Intent.Resting;
+        if (!foodBlocked && agent.Hunger >= HungerThreshold)          return Intent.Eating;
         return Intent.Working;
     }
 
@@ -94,45 +128,64 @@ public class AgentBehavior
         ReleaseNode();
         agent.SetPath(null);
         agent.IsResting = false;
-        sub = Sub.Seek;
-        work = Work.SeekWood;
-        actTimer = 0f;
+        work         = WorkState.Seek;
+        drinkSub     = Sub.Seek;
+        eatSub       = Sub.Seek;
+        restSub      = Sub.Seek;
+        actTimer     = 0f;
         seekCooldown = 0f;
+        idleTimer    = 0f;
+        // noFoodTicks intentionally NOT reset — survives intent switches.
+        currentSite  = null;
     }
 
     // ── Drinking ──────────────────────────────────────────────────────────────
     void UpdateDrink(float dt)
     {
-        switch (sub)
+        switch (drinkSub)
         {
             case Sub.Seek:
                 Action = "Drinking: seek water";
                 seekCooldown -= dt;
                 if (seekCooldown > 0f) return;
                 seekCooldown = SeekInterval;
-                if (grid.TryFindNearestDrinkPoint(agent.CellX, agent.CellZ, out Vector2Int wcell))
+                Vector2Int wcell = GetDrinkPoint();
+                if (wcell.x >= 0)
                 {
-                    var path = Pathfinder.FindPath(grid,
+                    var p = Pathfinder.FindPath(grid,
                         new Vector2Int(agent.CellX, agent.CellZ), wcell);
-                    if (path != null) { agent.SetPath(path); sub = Sub.MoveTo; }
+                    if (p != null) { agent.SetPath(p); drinkSub = Sub.MoveTo; }
                 }
                 break;
             case Sub.MoveTo:
                 Action = "Drinking: to water";
-                if (!agent.HasPath) { actTimer = 0f; sub = Sub.Act; }
+                if (!agent.HasPath) { actTimer = 0f; drinkSub = Sub.Act; }
                 break;
             case Sub.Act:
                 Action = "Drinking";
                 actTimer += dt;
-                if (actTimer >= DrinkDurationSeconds) { agent.Thirst = 0f; sub = Sub.Seek; }
+                if (actTimer >= DrinkDurationSeconds) { agent.Thirst = 0f; drinkSub = Sub.Seek; }
                 break;
         }
+    }
+
+    Vector2Int GetDrinkPoint()
+    {
+        int dx = agent.CellX - drinkCacheFromX;
+        int dz = agent.CellZ - drinkCacheFromZ;
+        if ((dx * dx + dz * dz) > DrinkCacheRadius * DrinkCacheRadius || cachedDrinkPoint.x < 0)
+        {
+            grid.TryFindNearestDrinkPoint(agent.CellX, agent.CellZ, out cachedDrinkPoint);
+            drinkCacheFromX = agent.CellX;
+            drinkCacheFromZ = agent.CellZ;
+        }
+        return cachedDrinkPoint;
     }
 
     // ── Eating ────────────────────────────────────────────────────────────────
     void UpdateEat(float dt)
     {
-        switch (sub)
+        switch (eatSub)
         {
             case Sub.Seek:
                 Action = "Eating: seek food";
@@ -140,94 +193,268 @@ public class AgentBehavior
                 if (seekCooldown > 0f) return;
                 seekCooldown = SeekInterval;
                 var node = FindNearestUnclaimed(ResourceType.Food);
-                if (node == null) return; // no food (Phase C: farms)
+                if (node == null)
+                {
+                    noFoodTicks = NoFoodTickDuration;
+                    return;
+                }
                 var path = Pathfinder.FindPath(grid,
                     new Vector2Int(agent.CellX, agent.CellZ),
                     new Vector2Int(node.CellX, node.CellZ));
                 if (path == null) return;
                 node.TryClaim(agent); currentNode = node;
-                agent.SetPath(path); sub = Sub.MoveTo;
+                noFoodTicks = 0;  // food found — unblock hunger intent
+                agent.SetPath(path); eatSub = Sub.MoveTo;
                 break;
             case Sub.MoveTo:
                 Action = "Eating: to food";
-                if (!agent.HasPath) { actTimer = 0f; sub = Sub.Act; }
+                if (!agent.HasPath) { actTimer = 0f; eatSub = Sub.Act; }
                 break;
             case Sub.Act:
                 Action = "Eating";
                 actTimer += dt;
                 if (actTimer >= EatDurationSeconds)
                 {
-                    if (currentNode != null) currentNode.Harvest(1);
+                    currentNode?.Harvest(1);
                     ReleaseNode();
                     agent.Hunger = 0f;
-                    sub = Sub.Seek;
+                    eatSub = Sub.Seek;
                 }
                 break;
         }
     }
 
-    // ── Resting (go to OWN home; recover Stamina; home-only) ──────────────────
+    // ── Resting ───────────────────────────────────────────────────────────────
     void UpdateRest(float dt)
     {
-        switch (sub)
+        switch (restSub)
         {
             case Sub.Seek:
-            {
                 Action = "Resting: go home";
                 agent.IsResting = false;
                 var home = Home();
-                if (home == null) { agent.SetPath(null); sub = Sub.Act; break; } // no home yet
-                var path = Pathfinder.FindPath(grid,
+                if (home == null) { agent.SetPath(null); restSub = Sub.Act; break; }
+                var rpath = Pathfinder.FindPath(grid,
                     new Vector2Int(agent.CellX, agent.CellZ),
                     new Vector2Int(home.CellX, home.CellZ));
-                if (path != null) { agent.SetPath(path); sub = Sub.MoveTo; }
-                else sub = Sub.Act;
+                if (rpath != null) { agent.SetPath(rpath); restSub = Sub.MoveTo; }
+                else restSub = Sub.Act;
                 break;
-            }
             case Sub.MoveTo:
                 Action = "Resting: to home";
                 agent.IsResting = false;
-                if (!agent.HasPath) sub = Sub.Act;
+                if (!agent.HasPath) restSub = Sub.Act;
                 break;
             case Sub.Act:
                 Action = sim.Clock.IsNight ? "Resting (night)" : "Resting";
-                // Stamina recovers only once the agent's own home exists and is built.
                 agent.IsResting = agent.Home != null && agent.Home.IsBuilt;
                 break;
         }
     }
 
-    // ── Working (gather wood -> build OWN Dwelling -> idle at home) ────────────
+    // ── Work dispatch ─────────────────────────────────────────────────────────
     void UpdateWork(float dt)
     {
+        switch (agent.Job)
+        {
+            case JobRole.Logger:  UpdateGather(dt, ResourceType.Wood);  break;
+            case JobRole.Farmer:  UpdateGather(dt, ResourceType.Food);  break;
+            case JobRole.Miner:   UpdateGather(dt, ResourceType.Stone); break;
+            case JobRole.Builder: UpdateBuilder(dt);                    break;
+        }
+    }
+
+    // ── Gatherer ──────────────────────────────────────────────────────────────
+    void UpdateGather(float dt, ResourceType resourceType)
+    {
+        StorageNode storage   = OwnStorage();
+        bool        storageReady = storage != null && storage.IsBuilt;
+
         switch (work)
         {
-            case Work.SeekWood:
-                Action = "Working: seek wood";
-                var home = Home();
-                if (home == null) return;                          // no Dwelling free yet -> wait
-                if (home.IsBuilt) { work = Work.GoHome; return; }  // my house is built -> idle
-                if (agent.WoodCarried >= agent.CarryCapacity) { BeginDeliver(); return; }
+            case WorkState.Seek:
+                Action = $"Seeking {resourceType}";
                 seekCooldown -= dt;
                 if (seekCooldown > 0f) return;
                 seekCooldown = SeekInterval;
-                var wnode = FindNearestUnclaimed(ResourceType.Wood);
-                if (wnode == null) { work = Work.GoHome; return; }
-                var wpath = Pathfinder.FindPath(grid,
-                    new Vector2Int(agent.CellX, agent.CellZ),
-                    new Vector2Int(wnode.CellX, wnode.CellZ));
-                if (wpath == null) return;
-                wnode.TryClaim(agent); currentNode = wnode;
-                agent.SetPath(wpath); work = Work.MoveToWood;
+
+                var rnode = FindNearestUnclaimed(resourceType);
+                if (rnode == null) { EnterIdle(); return; }
+
+                Vector2Int targetCell;
+                if (resourceType == ResourceType.Stone)
+                {
+                    if (!grid.TryGetWalkableNeighbor(rnode.CellX, rnode.CellZ, out targetCell))
+                    { EnterIdle(); return; }
+                }
+                else targetCell = new Vector2Int(rnode.CellX, rnode.CellZ);
+
+                var rpath = Pathfinder.FindPath(grid,
+                    new Vector2Int(agent.CellX, agent.CellZ), targetCell);
+                if (rpath == null) return;
+
+                rnode.TryClaim(agent); currentNode = rnode;
+                agent.SetPath(rpath); work = WorkState.MoveToResource;
                 break;
 
-            case Work.MoveToWood:
-                Action = "Working: to wood";
-                if (!agent.HasPath) { actTimer = 0f; work = Work.HarvestWood; }
+            case WorkState.MoveToResource:
+                Action = $"To {resourceType}";
+                if (!agent.HasPath) { actTimer = 0f; work = WorkState.Harvest; }
                 break;
 
-            case Work.HarvestWood:
-                Action = "Working: harvest wood";
+            case WorkState.Harvest:
+                Action = $"Harvesting {resourceType}";
+                actTimer += dt;
+                if (actTimer >= HarvestDurationSeconds)
+                {
+                    int need  = agent.CarryCapacity - CarriedOf(resourceType);
+                    int taken = currentNode != null ? currentNode.Harvest(need) : 0;
+                    agent.AddResource(resourceType, taken);
+                    ReleaseNode();
+                    work = CarriedOf(resourceType) > 0 ? WorkState.MoveToDeposit : WorkState.Seek;
+                }
+                break;
+
+            case WorkState.MoveToDeposit:
+                Action = storageReady ? "Hauling to Storage" : "Hauling to site";
+                {
+                    Vector2Int dest;
+                    if (storageReady)
+                    {
+                        dest = new Vector2Int(storage.CellX, storage.CellZ);
+                    }
+                    else
+                    {
+                        if (resourceType != ResourceType.Wood)
+                        { agent.ClearInventory(); EnterIdle(); return; }
+                        currentSite = NearestUnbuiltStructure();
+                        if (currentSite == null) { agent.ClearInventory(); EnterIdle(); return; }
+                        dest = new Vector2Int(currentSite.CellX, currentSite.CellZ);
+                    }
+                    var dpath = Pathfinder.FindPath(grid,
+                        new Vector2Int(agent.CellX, agent.CellZ), dest);
+                    if (dpath == null) { agent.ClearInventory(); work = WorkState.Seek; return; }
+                    agent.SetPath(dpath);
+                    work = storageReady ? WorkState.Deposit : WorkState.MoveToSite;
+                }
+                break;
+
+            case WorkState.Deposit:
+                Action = "Depositing";
+                if (!agent.HasPath)
+                {
+                    storage?.Deposit(resourceType, CarriedOf(resourceType));
+                    agent.ClearInventory();
+                    work = WorkState.Seek;
+                }
+                break;
+
+            case WorkState.MoveToSite:
+                Action = "Delivering wood";
+                if (!agent.HasPath)
+                {
+                    if (currentSite != null && !currentSite.IsBuilt)
+                        currentSite.DepositWood(agent.WoodCarried);
+                    agent.ClearInventory();
+                    currentSite = null;
+                    work = WorkState.Seek;
+                }
+                break;
+
+            case WorkState.Idle:
+                Action = "Idle";
+                idleTimer -= dt;
+                if (idleTimer <= 0f) work = WorkState.Seek;
+                break;
+
+            default:
+                work = WorkState.Seek;
+                break;
+        }
+    }
+
+    // ── Builder ───────────────────────────────────────────────────────────────
+    void UpdateBuilder(float dt)
+    {
+        StorageNode storage   = OwnStorage();
+        bool        storageReady = storage != null && storage.IsBuilt;
+
+        switch (work)
+        {
+            case WorkState.Seek:
+                Action = "Builder: seek site";
+                seekCooldown -= dt;
+                if (seekCooldown > 0f) return;
+                seekCooldown = SeekInterval;
+
+                currentSite = NextBuildTarget();
+                if (currentSite == null) { EnterIdle(); return; }
+
+                if (storageReady)
+                {
+                    // Post-Storage: withdraw wood from Storage, then walk to site.
+                    int stillNeeded = currentSite.WoodRequired - currentSite.WoodDeposited;
+                    if (stillNeeded <= 0)
+                    {
+                        // Wood already deposited by a previous trip — just go build.
+                        RouteToBuildSite();
+                        work = WorkState.MoveToSite;
+                        return;
+                    }
+                    int canCarry = agent.CarryCapacity - agent.WoodCarried;
+                    int toFetch  = Mathf.Min(stillNeeded, canCarry);
+                    if (toFetch <= 0) { RouteToBuildSite(); work = WorkState.MoveToSite; return; }
+
+                    // Walk to Storage first to pick up wood.
+                    var sp = Pathfinder.FindPath(grid,
+                        new Vector2Int(agent.CellX, agent.CellZ),
+                        new Vector2Int(storage.CellX, storage.CellZ));
+                    if (sp == null) { EnterIdle(); return; }
+                    agent.SetPath(sp);
+                    work = WorkState.MoveToStorage;
+                }
+                else
+                {
+                    // Pre-Storage: gather wood ourselves if we have none.
+                    if (agent.WoodCarried == 0)
+                    {
+                        var wnode = FindNearestUnclaimed(ResourceType.Wood);
+                        if (wnode == null) { EnterIdle(); return; }
+                        var wp = Pathfinder.FindPath(grid,
+                            new Vector2Int(agent.CellX, agent.CellZ),
+                            new Vector2Int(wnode.CellX, wnode.CellZ));
+                        if (wp == null) return;
+                        wnode.TryClaim(agent); currentNode = wnode;
+                        agent.SetPath(wp); work = WorkState.MoveToResource;
+                    }
+                    else { RouteToBuildSite(); work = WorkState.MoveToSite; }
+                }
+                break;
+
+            // Post-Storage: arrived at Storage — withdraw wood, then route to site.
+            case WorkState.MoveToStorage:
+                Action = "Builder: to storage";
+                if (!agent.HasPath)
+                {
+                    if (storage != null && currentSite != null)
+                    {
+                        int stillNeeded = currentSite.WoodRequired - currentSite.WoodDeposited;
+                        int toFetch     = Mathf.Min(stillNeeded, agent.CarryCapacity - agent.WoodCarried);
+                        int taken       = storage.WithdrawWood(Mathf.Max(0, toFetch));
+                        agent.AddResource(ResourceType.Wood, taken);
+                    }
+                    if (agent.WoodCarried > 0) { RouteToBuildSite(); work = WorkState.MoveToSite; }
+                    else { EnterIdle(); } // storage was empty
+                }
+                break;
+
+            case WorkState.MoveToResource:
+                Action = "Builder: to wood";
+                if (!agent.HasPath) { actTimer = 0f; work = WorkState.Harvest; }
+                break;
+
+            case WorkState.Harvest:
+                Action = "Builder: harvest wood";
                 actTimer += dt;
                 if (actTimer >= HarvestDurationSeconds)
                 {
@@ -235,58 +462,55 @@ public class AgentBehavior
                     int taken = currentNode != null ? currentNode.Harvest(need) : 0;
                     agent.AddResource(ResourceType.Wood, taken);
                     ReleaseNode();
-                    if (agent.WoodCarried >= agent.CarryCapacity) BeginDeliver();
-                    else work = Work.SeekWood;
+                    if (currentSite != null && agent.WoodCarried > 0)
+                    { RouteToBuildSite(); work = WorkState.MoveToSite; }
+                    else work = WorkState.Seek;
                 }
                 break;
 
-            case Work.MoveToSite:
-                Action = "Working: to site";
+            case WorkState.MoveToSite:
+                Action = "Builder: to site";
                 if (!agent.HasPath)
                 {
-                    if (currentStructure != null && !currentStructure.IsBuilt)
+                    if (currentSite != null && !currentSite.IsBuilt)
                     {
-                        currentStructure.DepositWood(agent.WoodCarried);
+                        currentSite.DepositWood(agent.WoodCarried);
                         agent.ClearInventory();
-                        work = Work.Building;
+                        // If still needs more wood, go back for another load.
+                        if (!currentSite.HasEnoughWood) { work = WorkState.Seek; return; }
+                        work = WorkState.Build;
                     }
-                    else { agent.ClearInventory(); work = Work.GoHome; }
+                    else { agent.ClearInventory(); currentSite = null; work = WorkState.Seek; }
                 }
                 break;
 
-            case Work.Building:
-                Action = "Working: building";
-                if (currentStructure == null) { work = Work.SeekWood; break; }
-                currentStructure.AdvanceBuild(dt);
-                if (currentStructure.IsBuilt) work = Work.GoHome;
+            case WorkState.Build:
+                Action = "Building";
+                if (currentSite == null) { work = WorkState.Seek; break; }
+                currentSite.AdvanceBuild(dt);
+                if (currentSite.IsBuilt) { currentSite = null; work = WorkState.Seek; }
                 break;
 
-            case Work.GoHome:
-                Action = "Working: go home";
-                {
-                    var h = Home();
-                    if (h != null)
-                    {
-                        var p = Pathfinder.FindPath(grid,
-                            new Vector2Int(agent.CellX, agent.CellZ),
-                            new Vector2Int(h.CellX, h.CellZ));
-                        if (p != null) agent.SetPath(p);
-                    }
-                    work = Work.Idle;
-                }
+            case WorkState.Idle:
+                Action = "Builder: idle";
+                idleTimer -= dt;
+                if (idleTimer <= 0f) work = WorkState.Seek;
                 break;
 
-            case Work.Idle:
-                Action = agent.HasPath ? "Working: go home" : "Idle (home)";
-                // If my house still isn't built (e.g. just got assigned), go build it.
-                if (!agent.HasPath && agent.Home != null && !agent.Home.IsBuilt) work = Work.SeekWood;
+            default:
+                work = WorkState.Seek;
                 break;
         }
     }
 
+    // ── Idle helper ───────────────────────────────────────────────────────────
+    void EnterIdle()
+    {
+        idleTimer = IdleCooldownSeconds;
+        work      = WorkState.Idle;
+    }
+
     // ── Home assignment ───────────────────────────────────────────────────────
-    // The agent's assigned Dwelling. Lazily claims the nearest own-civ Dwelling that still
-    // has a free slot (2 agents per Dwelling), so each pair builds and lives in its own.
     StructureNode Home()
     {
         if (agent.Home == null) AssignHome();
@@ -298,7 +522,7 @@ public class AgentBehavior
         StructureNode best = null; float bestSq = float.MaxValue;
         foreach (var s in sim.StructureNodes)
         {
-            if (s.Civ != agent.Civ || !s.HasFreeSlot) continue;
+            if (s.Civ != agent.Civ || s.Type != StructureType.Dwelling || !s.HasFreeSlot) continue;
             float dx = s.CellX - agent.CellX, dz = s.CellZ - agent.CellZ;
             float sq = dx * dx + dz * dz;
             if (sq < bestSq) { bestSq = sq; best = s; }
@@ -306,16 +530,54 @@ public class AgentBehavior
         if (best != null && best.TryAddResident()) agent.Home = best;
     }
 
-    // ── Resource helpers ──────────────────────────────────────────────────────
-    void BeginDeliver()
+    // ── Sim helpers ───────────────────────────────────────────────────────────
+    StorageNode OwnStorage()
     {
-        var s = Home();
-        if (s == null || s.IsBuilt) { agent.ClearInventory(); work = Work.GoHome; return; }
-        var path = Pathfinder.FindPath(grid,
+        foreach (var s in sim.StorageNodes)
+            if (s.Civ == agent.Civ) return s;
+        return null;
+    }
+
+    StructureNode NextBuildTarget()
+    {
+        foreach (var s in sim.StructureNodes)
+            if (s.Civ == agent.Civ && s.Type == StructureType.Storage && !s.IsBuilt) return s;
+        foreach (var s in sim.StructureNodes)
+            if (s.Civ == agent.Civ && s.Type == StructureType.Dwelling && !s.IsBuilt) return s;
+        return null;
+    }
+
+    StructureNode NearestUnbuiltStructure()
+    {
+        StructureNode best = null; float bestSq = float.MaxValue;
+        foreach (var s in sim.StructureNodes)
+        {
+            if (s.Civ != agent.Civ || s.IsBuilt) continue;
+            float dx = s.CellX - agent.CellX, dz = s.CellZ - agent.CellZ;
+            float sq = dx * dx + dz * dz;
+            if (sq < bestSq) { bestSq = sq; best = s; }
+        }
+        return best;
+    }
+
+    void RouteToBuildSite()
+    {
+        if (currentSite == null) return;
+        var p = Pathfinder.FindPath(grid,
             new Vector2Int(agent.CellX, agent.CellZ),
-            new Vector2Int(s.CellX, s.CellZ));
-        if (path == null) { agent.ClearInventory(); work = Work.SeekWood; return; }
-        currentStructure = s; agent.SetPath(path); work = Work.MoveToSite;
+            new Vector2Int(currentSite.CellX, currentSite.CellZ));
+        if (p != null) agent.SetPath(p);
+    }
+
+    int CarriedOf(ResourceType type)
+    {
+        switch (type)
+        {
+            case ResourceType.Wood:  return agent.WoodCarried;
+            case ResourceType.Food:  return agent.FoodCarried;
+            case ResourceType.Stone: return agent.StoneCarried;
+        }
+        return 0;
     }
 
     ResourceNode FindNearestUnclaimed(ResourceType type)
@@ -332,8 +594,5 @@ public class AgentBehavior
         return best;
     }
 
-    void ReleaseNode()
-    {
-        if (currentNode != null) { currentNode.Release(agent); currentNode = null; }
-    }
+    void ReleaseNode() { currentNode?.Release(agent); currentNode = null; }
 }

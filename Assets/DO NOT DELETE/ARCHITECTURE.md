@@ -1,4 +1,4 @@
-# TimeCraft — Architecture Document (v0.16)
+# TimeCraft — Architecture Document (v0.17)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
@@ -11,6 +11,17 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.17: Phase A4 + C1 scripts added to file tree; bug fix in AgentBehavior.
+StorageNode.cs (new): plain C#, civ-scoped stockpile (Food/Wood/Stone); Deposit/Withdraw.
+TerritorySystem.cs (new): plain C#, stamps initial civ + town territory blocks into
+GridData.Owner; GetTownCells / IsInTownTerritory. TerritoryManager.cs (new): MonoBehaviour
+bridge; Inspector overlays (Off/Territory/Walkable) rendered in Game view as Scene gizmos.
+AgentBehavior.cs → v0.15: noFoodCooldown (real-time float, reset in Abandon) replaced with
+noFoodTicks (tick-based int, NOT reset in Abandon) — food block survives drink interrupts;
+drink-point scan cached per agent (rescan only after 3-cell movement) — eliminates O(W×D)
+lag spike on food depletion. AgentManager.cs: subscribes sim.OnTick to decrement noFoodTicks
+on all behaviors. AgentView.cs: adds homeCell + homeBuilt Inspector read-outs.
 
 Changes in v0.16: one Dwelling per 2 agents (housing). StructureNode tracks residents
 (max 2, TryAddResident); Agent gains Home; StructureManager places ceil(agents/2)
@@ -119,6 +130,9 @@ Assets/
       ResourceManager.cs
       StructureNode.cs
       StructureManager.cs
+      StorageNode.cs
+      TerritorySystem.cs
+      TerritoryManager.cs
       AgentBehavior.cs
 ```
 
@@ -162,43 +176,67 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - ResourceManager.cs — MonoBehaviour bridge. Seed-based scatter: Wood/Food on walkable
   cells (marked occupied), Stone on reachable unwalkable hill cells; placeholder
   primitives (brown cube=wood, green sphere=food, grey cube=stone).
-- StructureNode.cs — Plain C#. Build-site data: Civ (owner), WoodRequired, WoodDeposited,
-  BuildProgress (0..1 continuous timer), IsBuilt; occupancy (ResidentCount, MaxResidents=2,
-  HasFreeSlot, TryAddResident). DepositWood + AdvanceBuild.
-- StructureManager.cs — MonoBehaviour bridge. Once civs + agents exist, places
-  ceil(civAgents/2) Dwellings per civ in a spaced grid near the anchor (free walkable
-  cells, marked occupied), and spawns/animates a placeholder cube per site (flat→tall).
+- StorageNode.cs — Plain C#. Civ-scoped stockpile of Food/Wood/Stone; Deposit(type,
+  amount) and WithdrawWood(amount); IsBuilt flipped by StructureManager when the Storage
+  structure completes.
+- TerritorySystem.cs — Plain C#. Stamps initial civ territory and town territory blocks
+  into GridData.Owner at sim start; GetTownCells(CivId) and IsInTownTerritory(CivId,x,z)
+  for placement queries. Explorer-driven claiming and contiguous capture deferred (Phase D).
+- TerritoryManager.cs — MonoBehaviour bridge. Inspector: CivTerritoryRadius, TownTerritoryRadius,
+  OverlayMode enum (Off/Territory/Walkable). Calls TerritorySystem.InitialiseStartTerritories;
+  Scene gizmo draws colored quads per cell; overlay visible in Game view.
+- StructureNode.cs — Plain C#. Build-site data: Type (Dwelling/Storage/Farm), Civ (owner),
+  WoodRequired, WoodDeposited, BuildProgress (0..1 continuous timer), IsBuilt; occupancy
+  (ResidentCount, MaxResidents=2, HasFreeSlot, TryAddResident). DepositWood + AdvanceBuild.
+- StructureManager.cs — MonoBehaviour bridge. Places 1 Storage + ceil(agents/2) Dwellings
+  per civ near their anchor (free walkable cells, marked occupied); animates placeholder
+  cubes; flips StorageNode.IsBuilt when the Storage structure completes. Inspector read-out:
+  per-civ StorageBuilt/Wood/Food/Stone (live).
 - AgentBehavior.cs — Plain C#. Per-agent decision controller. Each step ChooseIntent()
-  picks by priority: Drinking (Thirst>=thr) > Eating (Hunger>=thr) > Resting (night, or
-  Stamina exhausted, with wake hysteresis) > Working. Survival preempts all; Work never
-  runs at night. Drinking → nearest drink point → drink. Eating → claim nearest food node →
-  eat. Resting → go to OWN home → set IsResting (Stamina recovers). Working → gather wood →
-  build OWN Dwelling → idle at home. Each agent claims the nearest own-civ Dwelling with a
-  free slot (2 max) as Home. Exposes Action + Intent for
-  AgentView. Mining/farming still to come (Phase C).
+  picks by priority: Drinking (Thirst>=thr) > Eating (Hunger>=thr, food not blocked) >
+  Resting (night or Stamina exhausted, with wake hysteresis) > Working. noFoodTicks
+  (tick-based, NOT reset in Abandon) suppresses hunger intent when food is depleted so rest
+  wins at night; drink-point cached per agent (rescan on 3-cell movement). OnTick()
+  decrements noFoodTicks (called via AgentManager→sim.OnTick subscription). Resting → go
+  to OWN home → set IsResting (Stamina recovers). Working → gather/haul/build by Job role.
+  Each agent claims nearest own-civ Dwelling with free slot as Home. Exposes Action +
+  Intent for AgentView. Job roles: Logger/Farmer/Miner/Builder (Farmer/Miner/Builder
+  behavior stubs; full farming Phase C2).
+- AgentManager.cs — MonoBehaviour bridge. Registers civ anchors, spawns agentsPerCiv
+  agents per civ, tints by civ, attaches AgentBehavior + AgentView, assigns Job roles,
+  creates NeedsSystem, subscribes sim.OnTick to decrement noFoodTicks on all behaviors.
+- AgentView.cs — MonoBehaviour, debug instrument. Mirrors live agent state into Inspector:
+  civ, Action/intent, four needs, inventory, cell, homeCell, homeBuilt.
 
 ## Interaction map
 
 - Sim spine: SimulationRunner → Simulation.Advance(FixedStep). OnTick / OnDayChanged
-  are the event bus; stat drains and future systems subscribe.
-- Agent lifecycle: AgentManager registers civ anchors, then spawns 12 agents per civ
-  (Civ1/Civ2), each with its own AgentBehavior. Behavior owns all NPC logic; AgentManager
-  mirrors positions. Resource nodes are shared/contested; structures are civ-scoped.
-- Resource loop: AgentBehavior.TrySeekResource picks the nearest UNCLAIMED node →
+  are the event bus; stat drains and future systems subscribe. AgentManager subscribes
+  OnTick to decrement noFoodTicks on all behaviors.
+- Agent lifecycle: AgentManager registers civ anchors, spawns 12 agents per civ
+  (Civ1/Civ2), assigns Job roles, each with its own AgentBehavior. Behavior owns all NPC
+  logic; AgentManager mirrors positions. Resource nodes are shared/contested; structures
+  and storage are civ-scoped.
+- Resource loop: AgentBehavior.TrySeekResource picks nearest UNCLAIMED node →
   ResourceNode.TryClaim → Pathfinder → agent.SetPath → arrive → harvestTimer →
-  ResourceNode.Harvest → ReleaseNode → inventory → TryMoveToSite. One agent per node.
-- Work loop (lowest priority): each agent claims its own Dwelling (2 per house) → gathers
-  wood → builds THAT Dwelling → once IsBuilt idles/shelters/sleeps there. No wood is
-  gathered once its house is built. StructureManager reads BuildProgress for visuals.
+  ResourceNode.Harvest → ReleaseNode → inventory → haul to StorageNode.
+- Work loop (lowest priority): Loggers/Farmers/Miners gather and haul to Storage.
+  Builders withdraw wood from Storage → walk to site → deposit → build. Each agent claims
+  its own Dwelling (2 per house) for rest/reproduction. StructureManager reads
+  BuildProgress for visuals and flips StorageNode.IsBuilt when Storage completes.
 - Needs/decision: NeedsSystem raises Hunger+Thirst (and drains/recovers Stamina by
-  IsResting) each tick. AgentBehavior re-chooses an intent every step: thirsty → drink;
-  else hungry → eat; else night/exhausted → rest at home (Stamina recovers); else Work.
-  Survival preempts all; Work is daytime-only.
+  IsResting) each tick. AgentBehavior re-chooses intent every step: thirsty → drink
+  (cached drink point); food not blocked and hungry → eat; night/exhausted → rest at home
+  (Stamina recovers); else Work. noFoodTicks (not reset in Abandon) keeps food suppressed
+  across drink interrupts so rest wins at night when food is depleted.
+- Territory: TerritoryManager calls TerritorySystem.InitialiseStartTerritories on start,
+  stamping GridData.Owner for each civ's home + town block. Overlay toggle renders in
+  Game view. Explorer claiming and contiguous capture deferred (Phase D).
 - GridData.SetOccupied used by ResourceManager (resource cells) and StructureManager
-  (build site). Pathfinder checks Walkable only so agents can reach occupied cells.
-- Water/hills: GridData.Build flags IsWater (unwalkable); hill cells are unwalkable by
-  slope. Pathfinder routes around both. TryGetWalkableNeighbor / IsWaterAdjacent give the
-  adjacent stand-on cell the future Thirst need and Miner job will harvest from.
+  (build sites). Pathfinder checks Walkable only so agents can reach occupied cells.
+- Water/hills: GridData.Build flags IsWater (unwalkable); hill cells unwalkable by slope.
+  Pathfinder routes around both. TryGetWalkableNeighbor / IsWaterAdjacent give the
+  adjacent stand-on cell for Thirst and future Miner job.
 
 ## Scene wiring
 
@@ -209,4 +247,6 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
 - "Agents": AgentManager → runner=Simulation, gridManager=ProceduralTerrain.
 - "Resources": ResourceManager → runner=Simulation, gridManager=ProceduralTerrain.
 - "Structure": StructureManager → runner=Simulation, gridManager=ProceduralTerrain.
-  Spawns one structure cube per civ at runtime (placed near each civ's spawn anchor).
+  Spawns Storage + Dwelling cubes per civ at runtime near each civ's spawn anchor.
+- "Territory": TerritoryManager → runner=Simulation, gridManager=ProceduralTerrain.
+  Reads GridData.Owner; renders colored cell overlay in Game view.

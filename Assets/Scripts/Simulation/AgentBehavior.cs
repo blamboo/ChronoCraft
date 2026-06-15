@@ -1,6 +1,6 @@
 // AgentBehavior.cs
-// Version: 0.15 (fix: noFoodTicks tick-based, NOT reset in Abandon — survives drink
-//                interrupts; drink-point scan cached to eliminate lag on food depletion)
+// Version: 0.18 (Prototype v5: Explorer job — roams and claims a radius-5 area of unclaimed
+//                land; OwnerAgent; conscription stand-down; CombatCooldown stand-and-fight)
 // Purpose: Plain-C# per-agent decision controller.
 //          Priority: Drinking > Eating (critical at night) > Resting > Eating (normal) > Working.
 // Location: Assets/Scripts/Simulation/AgentBehavior.cs
@@ -71,15 +71,42 @@ public class AgentBehavior
     private int        drinkCacheFromZ  = int.MinValue;
     private const int  DrinkCacheRadius = 3;
 
+    // Per-agent deterministic RNG (seeded by Id) for the Explorer's wandering.
+    private readonly System.Random rng;
+
+    // Explorer state: where it is roaming and where it last stamped a claim.
+    private Vector2Int exploreTarget = new Vector2Int(-1, -1);
+    private int lastClaimX = int.MinValue, lastClaimZ = int.MinValue;
+    private const int ExploreClaimRadius = 5;   // GDD: claims a radius-5 area as it walks
+
     public AgentBehavior(Agent agent, Simulation sim, GridData grid)
     {
         this.agent = agent; this.sim = sim; this.grid = grid;
+        rng = new System.Random(agent.Id * 9176 + 1);
     }
+
+    // The agent this behavior drives — used by Simulation.KillAgent to find and remove it.
+    public Agent OwnerAgent => agent;
 
     public void Dispose() { ReleaseNode(); }
 
     public void Update(float dt)
     {
+        // Conscripted agents are driven by the Conflict system (Ch.26); the civilian
+        // decision brain stands down while they are mustered.
+        if (agent.Conscripted) { Action = "Soldiering"; return; }
+
+        // Under attack: stand and fight back (the Conflict system trades blows) rather than
+        // wandering off to satisfy needs mid-battle. Cooldown is refreshed on each strike.
+        if (agent.CombatCooldown > 0f)
+        {
+            agent.CombatCooldown -= dt;
+            agent.SetPath(null);
+            agent.IsResting = false;
+            Action = "Defending";
+            return;
+        }
+
         Intent desired = ChooseIntent();
         if (desired != CurrentIntent) { Abandon(); CurrentIntent = desired; }
 
@@ -257,11 +284,67 @@ public class AgentBehavior
     {
         switch (agent.Job)
         {
-            case JobRole.Logger:  UpdateGather(dt, ResourceType.Wood);  break;
-            case JobRole.Farmer:  UpdateGather(dt, ResourceType.Food);  break;
-            case JobRole.Miner:   UpdateGather(dt, ResourceType.Stone); break;
-            case JobRole.Builder: UpdateBuilder(dt);                    break;
+            case JobRole.Logger:   UpdateGather(dt, ResourceType.Wood);  break;
+            case JobRole.Farmer:   UpdateGather(dt, ResourceType.Food);  break;
+            case JobRole.Miner:    UpdateGather(dt, ResourceType.Stone); break;
+            case JobRole.Builder:  UpdateBuilder(dt);                    break;
+            case JobRole.Explorer: UpdateExplorer(dt);                   break;
         }
+    }
+
+    // ── Explorer (Ch.8 / Phase D) ───────────────────────────────────────────────
+    // Roams the map and claims a radius-5 area of UNCLAIMED land for its civ as it goes.
+    // It does not seize owned cells by walking — but stepping into an enemy's territory is
+    // what the Conflict system reads as an incursion (that is how wars start).
+    void UpdateExplorer(float dt)
+    {
+        Action = "Exploring";
+        ClaimAround();
+
+        if (!agent.HasPath)
+        {
+            seekCooldown -= dt;
+            if (seekCooldown > 0f) return;
+            seekCooldown = SeekInterval;
+
+            if (exploreTarget.x < 0 ||
+                (agent.CellX == exploreTarget.x && agent.CellZ == exploreTarget.y))
+                exploreTarget = PickExploreTarget();
+
+            var path = Pathfinder.FindPath(grid,
+                new Vector2Int(agent.CellX, agent.CellZ), exploreTarget);
+            if (path != null) agent.SetPath(path);
+            else exploreTarget = PickExploreTarget();
+        }
+    }
+
+    // Claim every unclaimed, walkable cell within ExploreClaimRadius of the explorer.
+    // Throttled to once per cell entered (radius scan is otherwise per-frame).
+    void ClaimAround()
+    {
+        if (agent.CellX == lastClaimX && agent.CellZ == lastClaimZ) return;
+        lastClaimX = agent.CellX; lastClaimZ = agent.CellZ;
+
+        int r = ExploreClaimRadius, r2 = r * r;
+        for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++)
+        {
+            if (dx * dx + dz * dz > r2) continue;
+            int x = agent.CellX + dx, z = agent.CellZ + dz;
+            if (grid.InBounds(x, z) && grid.Cells[x, z].Walkable &&
+                grid.Cells[x, z].Owner == CivId.None)
+                grid.SetOwner(x, z, agent.Civ);
+        }
+    }
+
+    Vector2Int PickExploreTarget()
+    {
+        for (int tries = 0; tries < 16; tries++)
+        {
+            int x = rng.Next(grid.Width), z = rng.Next(grid.Depth);
+            if (grid.Cells[x, z].Walkable) return new Vector2Int(x, z);
+        }
+        return new Vector2Int(agent.CellX, agent.CellZ);
     }
 
     // ── Gatherer ──────────────────────────────────────────────────────────────
@@ -488,7 +571,20 @@ public class AgentBehavior
                 Action = "Building";
                 if (currentSite == null) { work = WorkState.Seek; break; }
                 currentSite.AdvanceBuild(dt);
-                if (currentSite.IsBuilt) { currentSite = null; work = WorkState.Seek; }
+                if (currentSite.IsBuilt)
+                {
+                    // An agent finishing a building is a Town-tier History Log event (Ch.4/15).
+                    // The latch keeps it to one entry when several builders share a site.
+                    if (!currentSite.CompletionLogged)
+                    {
+                        currentSite.CompletionLogged = true;
+                        sim.Log.Record(EventType.StructureCompleted, EventSignificance.Town,
+                            agent.Civ + " completed a " + currentSite.Type + ".",
+                            civA: currentSite.Civ, actorId: agent.Id,
+                            cellX: currentSite.CellX, cellZ: currentSite.CellZ);
+                    }
+                    currentSite = null; work = WorkState.Seek;
+                }
                 break;
 
             case WorkState.Idle:

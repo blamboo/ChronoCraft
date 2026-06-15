@@ -1,8 +1,12 @@
 // StructureManager.cs
-// Version: 0.10 (added Storage inventory Inspector read-out; version bumped from 0.9)
+// Version: 0.11 (Prototype v5: foundations hidden until construction starts; new Dwellings
+//                queued at runtime as the population grows so newborns get homes)
 // Purpose: Unity bridge for prototype structures. Places ceil(agents/2) Dwellings + 1
 //          Storage per civ near each civ's spawn anchor, marks cells occupied, animates
 //          placeholder cubes, mirrors StorageNode inventory into the Inspector each frame.
+//          A placeholder stays hidden until its build actually begins (BuildProgress > 0).
+//          Periodically tops up each civ's housing so reproduction-driven population growth
+//          has dwellings to live in (Builders construct them; AgentBehavior claims slots).
 // Location: Assets/Scripts/Simulation/StructureManager.cs
 // Dependencies: UnityEngine; System.Collections.Generic; SimulationRunner, GridManager,
 //               StructureNode, StorageNode, CivState.
@@ -44,15 +48,25 @@ public class StructureManager : MonoBehaviour
         public Renderer      Rend;
     }
 
+    [Header("Housing (runtime)")]
+    [Tooltip("How often to top up dwellings for a growing population.")]
+    [Range(0.5f, 10f)] [SerializeField] private float housingCheckSeconds = 2f;
+    [Tooltip("Max new dwellings queued per civ per check (avoids bursts).")]
+    [Range(1, 8)]      [SerializeField] private int   maxDwellingsPerCheck = 2;
+
     private readonly List<Site>        sites       = new List<Site>();
     private readonly List<StorageNode> storageNodes = new List<StorageNode>();
-    private bool initialized;
+    private bool  initialized;
+    private float housingTimer;
 
     void Update()
     {
         if (!initialized) { TryInitialize(); if (!initialized) return; }
         AnimateSites();
         MirrorStorageReadout();
+
+        housingTimer -= Time.deltaTime;
+        if (housingTimer <= 0f) { housingTimer = housingCheckSeconds; EnsureHousing(); }
     }
 
     void AnimateSites()
@@ -61,6 +75,16 @@ public class StructureManager : MonoBehaviour
         {
             Site s = sites[i];
             if (s.View == null) continue;
+
+            // Flip Storage's built flag once the structure completes (needed even while
+            // the view's visibility is managed below).
+            if (s.Storage != null && !s.Storage.IsBuilt && s.Node.IsBuilt)
+                s.Storage.IsBuilt = true;
+
+            // The foundation is invisible until construction actually starts.
+            bool started = s.Node.BuildProgress > 0f;
+            if (s.View.gameObject.activeSelf != started) s.View.gameObject.SetActive(started);
+            if (!started) continue;
 
             float t = s.Node.BuildProgress;
             s.View.localScale = new Vector3(0.9f, Mathf.Lerp(0.1f, 1.5f, t), 0.9f);
@@ -73,10 +97,54 @@ public class StructureManager : MonoBehaviour
                           : new Color(0.65f, 0.45f, 0.25f),
                 t));
             s.Rend.SetPropertyBlock(mpb);
-
-            if (s.Storage != null && !s.Storage.IsBuilt && s.Node.IsBuilt)
-                s.Storage.IsBuilt = true;
         }
+    }
+
+    // Tops up each civ's dwellings so a growing (reproducing) population has homes. Counts
+    // all dwellings (built or queued) against population/2, then queues a few more if short;
+    // Builders construct them and AgentBehavior claims the free slots for newborns.
+    void EnsureHousing()
+    {
+        Simulation sim  = runner.Sim;
+        GridData   grid = gridManager.Grid;
+        if (sim == null || grid == null) return;
+
+        foreach (CivState civ in sim.Civs)
+        {
+            if (civ.Id == CivId.None) continue;
+
+            int pop = 0;
+            for (int i = 0; i < sim.Agents.Count; i++)
+                if (sim.Agents[i].Civ == civ.Id && sim.Agents[i].IsAlive) pop++;
+
+            int dwellings = 0;
+            for (int i = 0; i < sim.StructureNodes.Count; i++)
+            {
+                StructureNode n = sim.StructureNodes[i];
+                if (n.Civ == civ.Id && n.Type == StructureType.Dwelling) dwellings++;
+            }
+
+            int added = 0;
+            while (dwellings * 2 < pop && added < maxDwellingsPerCheck)
+            {
+                PlaceDwelling(sim, grid, civ);
+                dwellings++; added++;
+            }
+        }
+    }
+
+    void PlaceDwelling(Simulation sim, GridData grid, CivState civ)
+    {
+        Vector2Int cell = NearestFreeWalkable(grid, new Vector2Int(civ.AnchorX, civ.AnchorZ));
+
+        StructureNode node = sim.AddStructureNode(
+            StructureType.Dwelling, civ.Id, cell.x, cell.y,
+            dwellingWoodRequired, dwellingBuildDuration);
+        grid.SetOccupied(cell.x, cell.y, true);
+
+        SpawnCube(grid, $"Dwelling ({civ.Id}) +", cell, out Transform v, out Renderer r);
+        v.gameObject.SetActive(false);   // hidden until a builder starts it (AnimateSites)
+        sites.Add(new Site { Node = node, Storage = null, View = v, Rend = r });
     }
 
     void MirrorStorageReadout()

@@ -1,5 +1,5 @@
 // ResourceNode.cs
-// Version: 0.6 (added single-agent reservation: ClaimedBy / TryClaim / Release)
+// Version: 0.7 (Prototype v5: Regrow for wild-food/resource respawn)
 // Purpose: Plain-C# resource node for the TimeCraft prototype. Stores a node's type,
 //          cell position, remaining stock, and a single-agent reservation so that at
 //          most one agent gathers from a node at a time (prevents clumping). Passive sim
@@ -51,5 +51,13 @@ public class ResourceNode
         int taken = System.Math.Min(request, Amount);
         Amount -= taken;
         return taken;
+    }
+
+    // Regrow stock toward a cap (wild-food / resource respawn, Phase C2). Re-flips a
+    // depleted node back to harvestable so the world does not starve once nodes run dry.
+    public void Regrow(int amount, int cap)
+    {
+        if (amount <= 0 || Amount >= cap) return;
+        Amount = System.Math.Min(cap, Amount + amount);
     }
 }

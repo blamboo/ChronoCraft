@@ -1,5 +1,5 @@
 // StructureNode.cs
-// Version: 0.9 (added StructureType enum + Type field so agents distinguish Storage from Dwelling)
+// Version: 0.10 (Prototype v5: RemoveResident on death; CompletionLogged latch for the History Log)
 // Purpose: Plain-C# build-site data for the TimeCraft prototype. Tracks owning civ,
 //          deposited wood, build progress (continuous game-time timer), completion, and
 //          occupancy (how many agents call this their home). Passive until an agent calls
@@ -23,6 +23,10 @@ public class StructureNode
     public bool          HasEnoughWood    => WoodDeposited >= WoodRequired;
     public bool          IsBuilt          => BuildProgress >= 1f;
 
+    // One-shot latch so a completed structure is written to the History Log exactly once,
+    // even when several builders are working the same site (set by AgentBehavior).
+    public bool          CompletionLogged;
+
     // Occupancy: a Dwelling houses up to 2 agents (GDD S10/S11).
     public int  MaxResidents  => 2;
     public int  ResidentCount { get; private set; }
@@ -44,6 +48,12 @@ public class StructureNode
         if (ResidentCount >= MaxResidents) return false;
         ResidentCount++;
         return true;
+    }
+
+    // Frees a slot when a resident dies or relocates (called by Simulation.KillAgent).
+    public void RemoveResident()
+    {
+        if (ResidentCount > 0) ResidentCount--;
     }
 
     public void DepositWood(int amount)

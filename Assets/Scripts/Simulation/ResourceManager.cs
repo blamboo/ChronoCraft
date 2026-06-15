@@ -1,16 +1,20 @@
 // ResourceManager.cs
-// Version: 0.5 (added Stone/ore nodes scattered on hill cells; reuses wood/food scatter)
+// Version: 0.6 (Prototype v5: per-node view hidden when depleted, shown again on respawn)
 // Purpose: Unity bridge for prototype resource nodes. Scatters sim-side ResourceNodes
 //          (seed-based, reproducible) and spawns a placeholder primitive per node:
 //            - Wood / Food on walkable cells (marked occupied so structures avoid them).
 //            - Stone (ore) on UNWALKABLE hill cells (not water) that have at least one
 //              walkable neighbour, so a future Miner can stand adjacent to harvest it
 //              (same access pattern as drinking beside water).
-//          Holds no sim logic -- nodes are passive data.
+//          Holds no sim logic -- nodes are passive data. Each frame it hides a node's
+//          placeholder while the node is depleted and shows it again once ResourceRespawn
+//          regrows it.
 // Location: Assets/Scripts/Simulation/ResourceManager.cs
-// Dependencies: UnityEngine; SimulationRunner, GridManager, ResourceNode, GridData.
+// Dependencies: UnityEngine; System.Collections.Generic; SimulationRunner, GridManager,
+//               ResourceNode, GridData.
 // Events emitted: none. Events consumed: none.
 
+using System.Collections.Generic;
 using UnityEngine;
 
 public class ResourceManager : MonoBehaviour
@@ -44,9 +48,22 @@ public class ResourceManager : MonoBehaviour
 
     private bool initialized;
 
+    // Pairs each node with its placeholder so the view can be hidden/shown with depletion.
+    private class NodeView { public ResourceNode Node; public GameObject View; }
+    private readonly List<NodeView> nodeViews = new List<NodeView>();
+
     void Update()
     {
-        if (!initialized) TryInitialize();
+        if (!initialized) { TryInitialize(); return; }
+
+        // A depleted node's placeholder is hidden; it reappears when the node regrows.
+        for (int i = 0; i < nodeViews.Count; i++)
+        {
+            NodeView nv = nodeViews[i];
+            if (nv.View == null) continue;
+            bool show = !nv.Node.Depleted;
+            if (nv.View.activeSelf != show) nv.View.SetActive(show);
+        }
     }
 
     void TryInitialize()
@@ -81,10 +98,11 @@ public class ResourceManager : MonoBehaviour
             Vector2Int cell = RandomWalkableCell(grid, rng);
             if (cell.x < 0) break; // no walkable cell found
 
-            sim.AddResourceNode(type, cell.x, cell.y, amountPerNode);
+            ResourceNode node = sim.AddResourceNode(type, cell.x, cell.y, amountPerNode);
             grid.SetOccupied(cell.x, cell.y, true);
 
-            SpawnPlaceholder(grid, type, cell, color, primitiveType, scale, yOff);
+            GameObject view = SpawnPlaceholder(grid, type, cell, color, primitiveType, scale, yOff);
+            nodeViews.Add(new NodeView { Node = node, View = view });
         }
     }
 
@@ -100,16 +118,17 @@ public class ResourceManager : MonoBehaviour
             Vector2Int cell = RandomHillCell(grid, rng);
             if (cell.x < 0) break; // no suitable hill cell found
 
-            sim.AddResourceNode(ResourceType.Stone, cell.x, cell.y, amountPerNode);
+            ResourceNode node = sim.AddResourceNode(ResourceType.Stone, cell.x, cell.y, amountPerNode);
             grid.SetOccupied(cell.x, cell.y, true);
 
-            SpawnPlaceholder(grid, ResourceType.Stone, cell, color,
-                             PrimitiveType.Cube, scale, yOff);
+            GameObject view = SpawnPlaceholder(grid, ResourceType.Stone, cell, color,
+                                               PrimitiveType.Cube, scale, yOff);
+            nodeViews.Add(new NodeView { Node = node, View = view });
         }
     }
 
-    void SpawnPlaceholder(GridData grid, ResourceType type, Vector2Int cell, Color color,
-                          PrimitiveType primitiveType, Vector3 scale, float yOff)
+    GameObject SpawnPlaceholder(GridData grid, ResourceType type, Vector2Int cell, Color color,
+                                PrimitiveType primitiveType, Vector3 scale, float yOff)
     {
         var obj = GameObject.CreatePrimitive(primitiveType);
         obj.name = $"{type} Node ({cell.x},{cell.y})";
@@ -124,6 +143,7 @@ public class ResourceManager : MonoBehaviour
         var mpb = new MaterialPropertyBlock();
         mpb.SetColor("_BaseColor", color);
         obj.GetComponent<Renderer>().SetPropertyBlock(mpb);
+        return obj;
     }
 
     // Random walkable, unoccupied cell; falls back to a linear scan. (-1,-1) if full.

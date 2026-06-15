@@ -1,7 +1,53 @@
-# TimeCraft — Architecture Document (v0.17)
+# TimeCraft — Architecture Document (v0.18.4)
 
 What the code is. Read this and the Prototype GDD at the start of each task.
 Update whenever a script is added, changed, or removed.
+
+Changes in v0.18.4: presentation + housing pass (Unity bridges; no sim-logic change).
+ResourceManager v0.6: keeps a (node -> placeholder) map and hides a node's view while it is
+depleted, showing it again when ResourceRespawn regrows it (resources visibly disappear and
+return). StructureManager v0.11: a structure's placeholder stays hidden until construction
+actually starts (BuildProgress > 0) — no more visible empty foundations; and it now tops up
+each civ's dwellings at runtime (every ~2s) so a growing population has homes — Builders
+construct the new sites and AgentBehavior claims the free slots for newborns. Harness 20/20
+unchanged (these are MonoBehaviour bridges, not part of the headless build).
+
+Changes in v0.18.3: GDD-aligned territory & war model + anti-overlap (playtest pass 3).
+Explorer job role (Agent v0.15, AgentBehavior v0.18): explorers roam and claim a radius-5
+area of UNCLAIMED, walkable land for their civ as they go (Ch.8/Phase D) — this replaces the
+passive ring expansion (TerritoryGrowth now OFF by default in AgentManager). CombatSystem
+v0.4: war is no longer a timer — it ignites when an agent stands on another civ's territory
+(an incursion), and the owner musters in response (Phase D->E); once at war both sides keep
+mustering until conquest. SeparationSystem.cs (NEW): a light O(n^2) boids-style pass that
+nudges apart agents closer than ~0.9 cells, so soldiers/foragers/drinkers don't stack on one
+cell. AgentManager v0.17: spawns explorers (default 2/civ), creates SeparationSystem, leaves
+auto territory-growth off. Still pending (next pass): resource nodes hide on depletion and
+reappear on respawn; build foundations hidden until construction starts; homes built for
+newborns (StructureManager/ResourceManager bridges). Harness: 20/20.
+
+Changes in v0.18.2: second in-Unity playtest pass (perf + combat readability).
+Pathfinder v0.3: binary-heap open set (was an O(open) linear scan) — large-map A* is now
+cheap, fixing lag from army marching and civilian pathing. CombatSystem v0.3: melee now
+resolves on a steady game-time cadence (CombatTickSeconds) driven from OnStep instead of the
+sparse day-tick (the runner uses ticksPerDay=24, so OnTick was ~50s apart — fights were
+glacial and units wandered off mid-battle); struck civilians get a CombatCooldown and stand
+their ground; attackers spread to different sides of a target (no stacking); A* re-paths are
+throttled to destination changes. Agent v0.14: CombatCooldown. AgentBehavior v0.17: stand-
+and-fight while CombatCooldown>0. NeedsSystem v0.4: Hunger/Thirst creep up far slower while
+asleep (RestingDrainScale) so agents don't wake at night to drink. TerritoryGrowth v0.3:
+one grid pass per interval (was up to 4 full scans/civ — a day-boundary spike on big maps);
+default interval 2 days. AgentManager v0.16: disables Debug.Log stack-trace capture for the
+chronicle (the main editor lag spike at high time scale), exposes the territory interval.
+Harness: 19/19 (adds binary-heap pathfinding + barrier-routing checks).
+
+Changes in v0.18.1: in-Unity playtest fixes. ResourceRespawn.cs (NEW) regrows food/wood
+so the world stops starving once nodes deplete (Phase C2 stand-in). CombatSystem v0.2 now
+marches war parties through the A* Pathfinder (no more walking through water/hills) and
+stops one walkable cell short of the target instead of overlapping it. TerritoryGrowth v0.2
+self-seeds a block around each civ anchor if no start territory was stamped, so borders
+always expand and conquest has land to flip. AgentManager v0.15 creates ResourceRespawn,
+adds a History-Log->Console toggle (logHistoryToConsole), and exposes lineage/conflict/
+respawn tunables in the Inspector. ResourceNode v0.7 gains Regrow. Harness: 16/16 checks.
 
 Engine: Unity 6.3 LTS (6000.3.17f1). Render pipeline: URP. Language: C#.
 
@@ -11,6 +57,27 @@ migration path and an efficient time-rewind snapshot system.
 
 Versioning: this title carries the doc version. Each script header carries a
 `// Version:` line bumped when that script changes.
+
+Changes in v0.18: "The Living Chronicle" slice — Prototype v5's History Log (data only)
+plus the v2 Phase D/E/F + v3 health/death event-producers that fill it. The world now
+lives, reproduces, fights, and reaches a conquest end-state, writing its own history.
+NEW pure-C# systems: WorldEvent.cs (event schema v1: type/significance/actors/cell/cause)
+and TrueLog.cs (append-only, queryable record + causal graph + Chronicle) — GDD Ch.4;
+LineageSystem.cs (aging, life stages, pairing→gestation→birth with skill-averaging, death
+by old age) — Ch.11/Phase F; CombatSystem.cs (war-party muster, melee by skill/stamina,
+rout, conquest end-state with territory flip) — Ch.25/28/Phase E; TerritoryGrowth.cs
+(contiguous neutral expansion) — Ch.8/Phase D. CHANGED: Simulation (owns TrueLog; OnStep/
+OnAgentBorn/OnAgentDied/OnEnded hooks; agent Ids; central KillAgent; DeclareConquest);
+Agent (Id, Sex/LifeStage/AgeDays/parents, SkillFarming/SkillCombat, Conscripted, StepToward);
+NeedsSystem (Health dynamics + starvation/dehydration death); StructureNode (RemoveResident,
+CompletionLogged latch); AgentBehavior (OwnerAgent, conscription stand-down, logs
+StructureCompleted); AgentManager (founder life-cycle identity; creates the three systems;
+spawns/despawns views on birth/death; logs Foundings). Verified headlessly under Mono via
+Tools/SimHarness (see "Headless verification" below): 13/13 checks, deterministic.
+Deferred to Pre-Alpha+ (per chapter staging): the full event schema (witnesses, full
+cause-link authoring, compression), dispositions/traits/estate inheritance, capture/Jail +
+captive fates, surrender negotiation, gate/wall siege, Pathfinder-routed marching, and the
+v4-dependent half of v5 (player possession, dialogue, quests, reputation-toward-player).
 
 Changes in v0.17: Phase A4 + C1 scripts added to file tree; bug fix in AgentBehavior.
 StorageNode.cs (new): plain C#, civ-scoped stockpile (Food/Wood/Stone); Deposit/Withdraw.
@@ -102,10 +169,19 @@ the second half of the day: SimulationClock.IsNight is true for TickOfDay >= 225
 
 ## Advance order (per fixed step)
 
-1. Agent.Advance(dt)           — continuous movement
-2. AgentBehavior.Update(dt)    — state-machine transitions, timers (harvest, build)
-3. Tick cadence                — OnTick fires; NeedsSystem drains Hunger+Thirst+Stamina
-                                 (recovers Stamina if resting), day rollover
+1. Agent.Advance(dt)           — continuous movement (path-following)
+2. AgentBehavior.Update(dt)    — state-machine transitions, timers (harvest, build);
+                                 conscripted agents stand down (driven by CombatSystem)
+3. OnStep(dt) fires            — continuous-cadence systems: CombatSystem marches war parties
+4. Tick cadence                — OnTick fires; NeedsSystem drains Hunger+Thirst+Stamina and
+                                 applies Health/death; CombatSystem resolves melee + checks
+                                 conquest; then OnDayChanged on rollover (LineageSystem ages/
+                                 reproduces; CombatSystem musters; TerritoryGrowth expands)
+
+Life-cycle spine: births route LineageSystem → Simulation.EmitAgentBorn → OnAgentBorn (the
+bridge attaches a brain + view). Deaths route every cause → Simulation.KillAgent (logs the
+Death event, frees the home, removes the agent + behavior, fires OnAgentDied). Conquest
+routes CombatSystem → Simulation.DeclareConquest → OnEnded.
 
 ## File / folder tree (actual project layout)
 
@@ -134,9 +210,22 @@ Assets/
       TerritorySystem.cs
       TerritoryManager.cs
       AgentBehavior.cs
+      WorldEvent.cs        (v0.18 — True Log event schema)
+      TrueLog.cs           (v0.18 — the History Log)
+      LineageSystem.cs     (v0.18 — birth/aging/death)
+      CombatSystem.cs      (v0.18 — war + conquest)
+      TerritoryGrowth.cs   (v0.18 — border expansion)
+      ResourceRespawn.cs   (v0.18.1 — wild-food/resource respawn)
+      SeparationSystem.cs  (v0.18.3 — anti-overlap nudge)
+Tools/
+  SimHarness/              (NOT a Unity asset — headless verification, runs under Mono)
+    UnityShim.cs           (minimal Vector2Int/Vector3/Mathf so the sim compiles w/o the editor)
+    Program.cs             (builds a two-civ world, runs the systems, asserts on the True Log)
+    build.sh               (mcs compile + run)
 ```
 
-Note: Agent.cs and AgentManager.cs live in World/ per project convention.
+Note: Agent.cs and AgentManager.cs live in World/ per project convention. Tools/ lives at
+the repo root, OUTSIDE Assets/, so the Unity compiler never sees the shim.
 
 ## Script responsibilities (one line each)
 
@@ -207,6 +296,67 @@ Note: Agent.cs and AgentManager.cs live in World/ per project convention.
   creates NeedsSystem, subscribes sim.OnTick to decrement noFoodTicks on all behaviors.
 - AgentView.cs — MonoBehaviour, debug instrument. Mirrors live agent state into Inspector:
   civ, Action/intent, four needs, inventory, cell, homeCell, homeBuilt.
+
+## v0.18 — the Living Chronicle (new + changed)
+
+New (all plain C#, no UnityEngine, snapshot-friendly):
+- WorldEvent.cs — True Log event record, schema v1 (Ch.4.2): EventType (Founding/Birth/
+  Death/StructureCompleted/TerritoryClaimed/TerritoryCaptured/BattleFought/AgentCaptured/
+  CivConquered), EventSignificance (Personal/Town/Civilization/World), DeathCause, civ+agent
+  actor ids with roles, cell, Amount payload, CauseEventId (causal-graph seed), OriginTier
+  (never surfaced), Summary.
+- TrueLog.cs — append-only world history (Ch.4). Record() stamps tick/day from the clock;
+  queries OfType/ByCiv/AtLeast/ForAgent/Since/CountOf/FindById; CausalChain() walks
+  CauseEventId to the root (Ch.4.4); Chronicle(minSignificance) renders the headline history
+  (Town+ by default — personal events compress out, Ch.4.3). OnRecord for live UIs. NOT the
+  save/rewind system (Ch.4.5). Owned by Simulation as `Log`.
+- LineageSystem.cs — the life cycle (Ch.11, Phase F). On each day: ages everyone; Child→
+  Adult→Elder transitions; pairs fertile adults → gestation → birth (skills averaged from
+  parents + jitter, Ch.11.1) via Simulation, logging Birth; rolls death by old age past the
+  expectancy threshold. Seeded RNG (deterministic). Pop cap per civ.
+- CombatSystem.cs — the war (Ch.25/28, Phase E + F end-state). Musters a war party at the
+  rival (OnDayChanged), marches it (OnStep, StepToward), resolves melee by skill+stamina with
+  rout (OnTick); combat deaths route through Simulation.KillAgent citing the muster battle;
+  on a civ reaching zero agents declares conquest, flips the loser's territory (Territory
+  Captured), logs CivConquered. Seeded RNG. Uses GridData's int Owner API only.
+- TerritoryGrowth.cs — contiguous border expansion (Ch.8, Phase D). On an interval each civ
+  claims a ring of neutral, walkable, frontier cells and logs TerritoryClaimed (Town).
+  v0.2: self-seeds a small block around the civ anchor if no start territory exists.
+- ResourceRespawn.cs — wild-food/resource respawn (Phase C2 stand-in). On an interval
+  regrows Food (and optionally Wood/Stone) nodes toward a cap so foragers never run out and
+  the population is sustainable. Without it, finite nodes deplete and the world starves now
+  that Health/death is wired. (Real farming output is a later slice.)
+- CombatSystem v0.2 — marching uses the A* Pathfinder (routes around water/hills) and a
+  raider stops at a walkable cell beside its target; combat damage stays tick-quantized.
+
+Changed:
+- Simulation.cs — now owns the TrueLog; adds OnStep (continuous), OnAgentBorn/OnAgentDied,
+  OnEnded, and Ended/WinningCiv; assigns agent Ids in AddAgent; KillAgent (the one death
+  path: log + free home + remove agent/behavior + fire); DeclareConquest; CountLivingAgents.
+- Agent.cs — adds Id (log/lineage key), Sex, LifeStage, AgeDays, BirthTick, Mother/FatherId,
+  IsAlive, SkillFarming/SkillCombat, Conscripted, and StepToward (pure-C# direct move for
+  the raid layer).
+- NeedsSystem.cs — adds Health dynamics: maxed Hunger/Thirst injure, sustained low needs
+  recover, Health 0 → Simulation.KillAgent with the right DeathCause (Ch.9.2).
+- StructureNode.cs — RemoveResident (death frees a home slot); CompletionLogged latch (one
+  History Log entry per finished building even with several builders on it).
+- AgentBehavior.cs — OwnerAgent accessor (for KillAgent); conscripted agents stand down so
+  the war layer drives them; logs StructureCompleted when a build finishes (latched).
+- AgentManager.cs — gives founders life-cycle identity (Sex/Stage/Age/SkillCombat); creates
+  the Lineage/Combat/TerritoryGrowth systems (Inspector toggles + seeds); spawns a view+brain
+  on OnAgentBorn and destroys it on OnAgentDied; logs civ Foundings; Inspector read-out of
+  log size + war state.
+
+## Headless verification
+
+The simulation is plain C# decoupled from MonoBehaviours, so it runs without the editor.
+`Tools/SimHarness/build.sh` compiles the sim + world logic files against a tiny UnityEngine
+shim (Vector2Int/Vector3/Mathf) using Mono's `mcs` and runs a two-civ soak: it builds a flat
+grid, wires Needs+Health/Lineage/Combat/TerritoryGrowth plus the civilian brain, and asserts
+the True Log captured the full v5 event set (births, deaths incl. age + combat + starvation,
+battles, buildings, territory flips, conquest) with intact schema and a working causal chain.
+Current status: 13/13 checks, deterministic across runs (~50 days to conquest, ~114 events).
+The shim lives outside Assets/ so Unity never compiles it.
 
 ## Interaction map
 
